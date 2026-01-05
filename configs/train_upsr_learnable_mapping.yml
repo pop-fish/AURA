@@ -1,0 +1,290 @@
+# UPSR with Learnable Uncertainty Mapping - Training Configuration Example
+# 使用可学习不确定度映射的UPSR训练配置示例
+
+# ====================
+# 场景1: 从预训练模型开始，分阶段训练（推荐）
+# ====================
+
+name: UPSR_LearnableMapping_Stage1_Warmup
+model_type: UPSRRealModel
+scale: 4
+num_gpu: auto
+manual_seed: 0
+
+# ============ 数据集配置 ============
+datasets:
+  train:
+    name: DF2K
+    type: RealESRGANDataset
+    dataroot_gt: datasets/DF2K/DF2K_HR
+    meta_info: datasets/DF2K/meta_info/meta_info_DF2Kmultiscale.txt
+    io_backend:
+      type: disk
+
+    gt_size: 256
+    use_hflip: true
+    use_rot: true
+
+    # 数据加载
+    use_shuffle: true
+    num_worker_per_gpu: 6
+    batch_size_per_gpu: 4
+    micro_batchsize: 2  # 梯度累积
+    dataset_enlarge_ratio: 1
+    prefetch_mode: ~
+
+  val:
+    name: DIV2K_val
+    type: PairedImageDataset
+    dataroot_gt: datasets/DIV2K/DIV2K_valid_HR
+    dataroot_lq: datasets/DIV2K/DIV2K_valid_LR_bicubic/X4
+    io_backend:
+      type: disk
+    
+    desired_min_size: 256
+    chop_size: 512
+    chop_stride: 448
+    chop_bs: 1
+    noise_repeat: false
+
+# ============ 网络配置 ============
+# 主去噪网络
+network_g:
+  type: DiffusionUNet
+  params:
+    in_channels: 12  # 3*4 (PixelUnshuffle)
+    out_channels: 3
+    model_channels: 128
+    attention_resolutions: [16, 8]
+    num_res_blocks: 2
+    channel_mult: [1, 2, 2, 2]
+    num_head_channels: 32
+    cond_lq: true
+
+# 预训练的MSE网络（冻结）
+network_mse:
+  type: RRDBNet
+  params:
+    num_in_ch: 3
+    num_out_ch: 3
+    num_feat: 64
+    num_block: 23
+  ckpt:
+    path: experiments/pretrained/RealESRGAN_x4.pth
+    param_key_mse: params_ema
+    strict_load_mse: true
+
+# ============ 扩散过程配置 ============
+diffusion:
+  type: GaussianDiffusion
+  params:
+    timesteps: 1000
+    beta_schedule: linear
+  un: 1.0  # 不确定度最大值
+  min_noise: 0.05  # 最小噪声水平
+  one_step: false  # 是否使用单步去噪
+
+# ============ 可学习不确定度映射配置 ============
+uncertainty_mapping:
+  # 启用可学习映射
+  use_learnable: true
+  
+  # 映射类型: 'mlp' 或 'spatial'
+  type: mlp
+  
+  # MLP参数
+  hidden_dim: 64
+  num_layers: 3
+  use_residual: true
+  
+  # 分阶段训练策略
+  staged_training: true
+  freeze_others_initially: true  # 第一阶段冻结主网络
+  
+  # 学习率设置
+  lr_scale: 1.0  # warm-up阶段映射层学习率
+  main_lr_scale: 0.1  # 第二阶段主网络学习率倍数（相对于映射层）
+  
+  # 预训练权重（可选，如果从头开始则为null）
+  ckpt_path: ~
+  strict_load: true
+
+# ============ 训练配置 ============
+train:
+  # 优化器
+  optim_g:
+    type: Adam
+    lr: !!float 1e-4
+    weight_decay: 0
+    betas: [0.9, 0.999]
+  
+  # 学习率调度
+  scheduler:
+    type: MultiStepLR
+    milestones: [8000]  # warm-up阶段的milestone
+    gamma: 0.5
+
+  # 迭代次数
+  total_iter: 10000  # warm-up阶段：只训练映射层
+  warmup_iter: -1
+  
+  # 损失函数
+  perceptual_opt:
+    lpips_weight: 0.1
+  
+  # 混合精度训练
+  use_fp16: true
+  
+  # EMA
+  ema_decay: 0.999
+
+# ============ 验证配置 ============
+val:
+  val_freq: !!float 1000
+  save_img: true
+  pbar: true
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 4
+      test_y_channel: true
+      fr: true
+    ssim:
+      type: calculate_ssim
+      crop_border: 4
+      test_y_channel: true
+      fr: true
+    lpips:
+      type: lpips
+      fr: true
+
+# ============ 日志配置 ============
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 1000
+  use_tb_logger: true
+  wandb:
+    project: UPSR_LearnableMapping
+    resume_id: ~
+
+# ============ 路径配置 ============
+path:
+  pretrain_network_g: experiments/pretrained/upsr_x4_pretrained.pth
+  strict_load_g: true
+  param_key_g: params_ema
+  resume_state: ~
+  
+# ============ 其他配置 ============
+# 高阶退化
+high_order_degradation: true
+
+degradation:
+  use_sharp: true
+  scale: 4
+  gt_size: 256
+  
+  # 第一次退化
+  resize_prob: [0.2, 0.7, 0.1]
+  resize_range: [0.15, 1.5]
+  gaussian_noise_prob: 0.5
+  noise_range: [1, 30]
+  poisson_scale_range: [0.05, 3]
+  gray_noise_prob: 0.4
+  jpeg_range: [30, 95]
+  
+  # 第二次退化
+  second_blur_prob: 0.8
+  resize_prob2: [0.3, 0.4, 0.3]
+  resize_range2: [0.3, 1.2]
+  gaussian_noise_prob2: 0.5
+  noise_range2: [1, 25]
+  poisson_scale_range2: [0.05, 2.5]
+  gray_noise_prob2: 0.4
+  jpeg_range2: [30, 95]
+
+queue_size: 160
+
+---
+
+# ====================
+# 场景2: 第二阶段 - 全网络联合训练
+# ====================
+# 在warm-up完成后，修改配置继续训练
+
+name: UPSR_LearnableMapping_Stage2_FullTrain
+# ... 其他配置保持不变 ...
+
+uncertainty_mapping:
+  use_learnable: true
+  type: mlp
+  hidden_dim: 64
+  num_layers: 3
+  use_residual: true
+  
+  # 关闭分阶段训练，启用联合训练
+  staged_training: false
+  
+  # 使用不同学习率
+  lr_scale: 2.0  # 映射层使用2倍学习率
+  main_lr_scale: 0.5  # 主网络使用0.5倍学习率（相对基础学习率）
+
+train:
+  optim_g:
+    type: Adam
+    lr: !!float 5e-5  # 降低基础学习率
+    weight_decay: 0
+    betas: [0.9, 0.999]
+  
+  scheduler:
+    type: MultiStepLR
+    milestones: [50000, 100000, 150000]
+    gamma: 0.5
+  
+  total_iter: 200000  # 总训练迭代次数
+
+path:
+  # 从第一阶段的checkpoint继续
+  pretrain_network_g: experiments/UPSR_LearnableMapping_Stage1_Warmup/models/net_g_10000.pth
+  strict_load_g: true
+  resume_state: experiments/UPSR_LearnableMapping_Stage1_Warmup/training_states/10000.state
+
+uncertainty_mapping:
+  # 加载训练好的映射层
+  ckpt_path: experiments/UPSR_LearnableMapping_Stage1_Warmup/models/uncertainty_mapper_10000.pth
+  strict_load: true
+
+---
+
+# ====================
+# 场景3: 使用空间感知映射
+# ====================
+
+name: UPSR_SpatialMapping
+# ... 其他配置保持不变 ...
+
+uncertainty_mapping:
+  use_learnable: true
+  type: spatial  # 使用卷积网络
+  hidden_channels: 32  # 隐藏通道数
+  
+  staged_training: true
+  freeze_others_initially: true
+  lr_scale: 1.0
+
+# 空间感知映射可能需要更多训练时间
+train:
+  total_iter: 15000  # warm-up阶段
+
+---
+
+# ====================
+# 场景4: 不使用可学习映射（原始UPSR）
+# ====================
+
+name: UPSR_FixedMapping_Baseline
+
+uncertainty_mapping:
+  use_learnable: false  # 关闭可学习映射，使用固定映射
+
+# 其他配置与原始UPSR相同

@@ -1,0 +1,342 @@
+# ========================================
+# 🔥 基于 Diff 引导的稳健训练策略
+# Guidance Loss + Sparsity Loss
+# ========================================
+
+name: learnable_uncertainty_with_guidance  # 使用原实验名称
+model_target: basicsr.models.upsr_real_model.UPSRRealModel
+scale: 4
+num_gpu: 2
+manual_seed: 0
+queue_size: 160
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: ImageNet
+    type: RealESRGANDataset
+    dataroot_gt: /dataset/ImageNet/ILSVRC2012_TRAIN/train
+    meta_info_file: basicsr/data/meta_info/meta_info_ImageNet_GT_correct.txt
+    filename_tmpl: '{}'
+    io_backend:
+      type: disk
+    
+    mean: 0.5
+    std: 0.5
+
+    blur_kernel_size: 21
+    kernel_list: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
+    kernel_prob: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
+    sinc_prob: 0.1
+    blur_sigma: [0.2, 3]
+    betag_range: [0.5, 4]
+    betap_range: [1, 2]
+
+    blur_kernel_size2: 15
+    kernel_list2: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
+    kernel_prob2: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
+    sinc_prob2: 0.1
+    blur_sigma2: [0.2, 1.5]
+    betag_range2: [0.5, 4]
+    betap_range2: [1, 2]
+
+    final_sinc_prob: 0.8
+
+    gt_size: 256
+    rescale_gt: false
+    crop_pad_size: 256
+    use_hflip: true
+    use_rot: true
+
+    num_worker_per_gpu: 6
+    batch_size_per_gpu: 16
+    micro_batchsize: 16
+    dataset_enlarge_ratio: 1
+    prefetch_mode: cuda
+    pin_memory: true
+    persistent_workers: true
+
+  val_1:
+    name: imagenet256
+    type: PairedImageDataset
+    dataroot_gt: /dataset/ImageNet/imagenet256/gt
+    dataroot_lq: /dataset/ImageNet/imagenet256/lq
+    io_backend:
+      type: disk
+    batch_size: 32
+
+# network structures
+network_g:
+  target: basicsr.archs.swin_unet_arch.UNetModelSwin
+  params:
+    image_size: 64
+    in_channels: 48
+    model_channels: 160
+    out_channels: 3
+    attention_resolutions: [64,32,16,8]
+    dropout: 0
+    channel_mult: [1, 2, 2, 4]
+    num_res_blocks: [2, 2, 2, 2]
+    conv_resample: true
+    dims: 2
+    use_fp16: false
+    num_head_channels: 32
+    use_scale_shift_norm: true
+    resblock_updown: false
+    swin_depth: 2
+    swin_embed_dim: 192
+    window_size: 8
+    mlp_ratio: 4
+    cond_lq: true
+    lq_size: 64
+    num_feat: 128
+
+diffusion:
+  un: 0.1
+  min_noise: 0.0  # 🔥 归零底噪（与预训练模型保持一致）
+  target: models.script_util.create_gaussian_diffusion
+  params:
+    sf: 4
+    schedule_name: exponential
+    schedule_kwargs:
+      power: 0.2
+    etas_end: 0.99
+    steps: 5
+    min_noise_level: 0.2
+    kappa: 2.5
+    weighted_mse: false
+    predict_type: xstart
+    timestep_respacing: ~
+    scale_factor: 1.0
+    normalize_input: true
+    latent_flag: false
+
+network_mse:
+  target: basicsr.archs.atd_real_arch.ATD
+  ckpt: 
+    path: experiments/pretrained_models/atd_real.pth
+    strict_load_mse: true
+    param_key_mse: params_ema
+  params:
+    upscale: 4
+    in_chans: 3
+    img_size: 64
+    embed_dim: 96
+    depths: [6, 6, 6, 6]
+    num_heads: [4, 4, 4, 4]
+    window_size: 16
+    category_size: 128
+    num_tokens: 64
+    reducted_dim: 8
+    convffn_kernel_size: 7
+    img_range: 1.
+    mlp_ratio: 1
+    upsampler: 'pixelshuffledirect'
+    resi_connection: '1conv'
+    use_checkpoint: false
+
+# 🔥 Uncertainty Mapping - 从预训练checkpoint继续训练
+uncertainty_mapping:
+  use_learnable: true
+  type: content_aware  # 使用内容感知映射
+  
+  # 内容感知映射特有参数
+  hidden_channels: 64      # 特征提取隐藏层通道数（默认64）
+  num_heads: 4             # Cross-Attention头数（默认4）
+  window_size: 8           # 窗口注意力大小（内存优化）
+  
+  # ============================================================
+  # 训练策略：联合训练（不冻结主网络）
+  # ============================================================
+  staged_training: false   # 不使用分阶段训练
+  freeze_main_network: true   # 冻结主网络
+  freeze_others_initially: false
+  
+  # 学习率配置
+  mapper_lr_scale: 1.0        # 映射层使用基础学习率
+  main_lr_scale: 1.0          # 主网络也使用基础学习率
+  
+  # 🔥 加载预训练的映射层（从65000 iter继续训练）
+  ckpt_path: experiments/learnable_uncertainty_with_guidance/models/uncertainty_mapper_65000.pth
+  strict_load: true
+
+# path
+path:
+  # 🔥 从65000 iter的checkpoint继续训练
+  pretrain_network_g: experiments/learnable_uncertainty_with_guidance/models/net_g_65000.pth
+  strict_load_g: true
+  
+  # 🔥 恢复训练状态（优化器、调度器、iter计数等）
+  resume_state: experiments/learnable_uncertainty_with_guidance/training_states/65000.state
+  
+  # 直接在原目录继续训练
+  experiments_root: experiments/learnable_uncertainty_with_guidance
+  models: experiments/learnable_uncertainty_with_guidance/models
+  training_states: experiments/learnable_uncertainty_with_guidance/training_states
+  log: experiments/learnable_uncertainty_with_guidance
+  visualization: experiments/learnable_uncertainty_with_guidance/visualization
+
+# training settings
+train:
+  use_fp16: true
+  ema_decay: 0.999
+  
+  # 总训练步数
+  total_iter: 100000
+  warmup_iter: 500  # warmup 500次
+  
+  # optimizer for main network
+  optim_g:
+    type: AdamW
+    lr: !!float 2e-4
+    weight_decay: 0.0005
+    betas: [0.9, 0.999]
+
+  # 🔥 核心：基于 Diff 引导的损失配置
+  # 关键思想：
+  # 1. guidance_loss_weight: 让 uncertainty 接近平滑的 Diff（主要约束）
+  # 2. sparsity_weight: 轻微的稀疏性约束（辅助作用）
+  # 3. Diff 本身包含内容信息，避免模型学偏
+  
+  # Guidance Loss (主要约束)
+  # - 使用 Diff 作为参考答案（Anchor）
+  # - 通过 3x3 平均池化去除 Diff 中的噪点
+  # - 允许模型适度调整，但不会偏离太远
+  guidance_loss_weight: 0.1
+  # 建议值：
+  # - 初期训练: 1.0 (强引导，快速收敛)
+  # - 精细调整: 0.5 (给模型更多自由度)
+  # - 仅作参考: 0.1 (主要靠主任务优化)
+  
+  # Sparsity Loss (辅助约束)
+  # - 鼓励整体低噪声，避免过度加噪
+  # - 权重较小，因为 guidance 已经提供了主要约束
+  sparsity_weight: 0.05
+  # 建议值：
+  # - 标准: 0.01
+  # - 更稀疏: 0.05
+  # - 关闭: 0.0 (仅依赖 guidance)
+  
+  # 基础损失
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0
+    reduction: mean
+
+  perceptual_opt:
+    lpips_weight: 0.5
+
+  # scheduler
+  scheduler:
+    type: TrueCosineAnnealingLR
+    T_max: 100000
+    eta_min: !!float 1e-5
+
+# degradation settings
+degradation:
+  scale: 4
+  resize_prob: [0.2, 0.7, 0.1]
+  resize_range: [0.15, 1.5]
+  gaussian_noise_prob: 0.5
+  noise_range: [1, 30]
+  poisson_scale_range: [0.05, 3.0]
+  gray_noise_prob: 0.4
+  jpeg_range: [30, 95]
+
+  second_order_prob: 0.5
+  second_blur_prob: 0.8
+  resize_prob2: [0.3, 0.4, 0.3]
+  resize_range2: [0.3, 1.2]
+  gaussian_noise_prob2: 0.5
+  noise_range2: [1, 25]
+  poisson_scale_range2: [0.05, 2.5]
+  gray_noise_prob2: 0.4
+  jpeg_range2: [30, 95]
+
+  gt_size: 256
+  resize_back: false
+  use_sharp: false
+
+# losses - 高阶退化设置
+high_order_degradation: true
+
+# validation settings
+val:
+  val_freq: !!float 5e3
+  save_img: true
+  save_diff_heatmap: false  # 不保存 Diff 热力图（加快验证速度）
+  save_uncertainty_heatmap: false  # 不保存 Uncertainty 热力图
+  
+  desired_min_size: 64
+  chop_size: 512
+  chop_stride: 448
+  chop_bs: 1
+  noise_repeat: false
+  pbar: true
+
+  metrics:
+    psnr:
+      fr: true
+    ssim:
+      fr: true
+    lpips:
+      fr: true
+      better: lower
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500
+
+# ========================================
+# 🎯 训练策略说明
+# ========================================
+# 
+# 这个配置使用 Diff 作为"参考答案"来引导 AURA 学习：
+# 
+# 1. **Guidance Loss (权重 1.0)**
+#    - 让 uncertainty 接近平滑后的 Diff
+#    - Diff 本身包含边缘、纹理等内容信息
+#    - 3x3 平均池化去除 Diff 中的噪点和伪影
+#    - 使用 Smooth L1 Loss，对异常值更鲁棒
+# 
+# 2. **Sparsity Loss (权重 0.01)**
+#    - 轻微的稀疏性约束
+#    - 防止模型过度加噪
+#    - 因为有 guidance 托底，这个权重可以很小
+# 
+# 3. **主任务 Loss (MSE + LPIPS)**
+#    - 最终的重建质量仍由主任务决定
+#    - Guidance 只是提供一个合理的起点
+#    - 模型仍可以根据数据调整
+# 
+# 优势：
+# ✅ 收敛更稳定（有 Diff 作为锚点）
+# ✅ 不会学到完全错误的分布
+# ✅ 允许模型适度调整（Smooth L1 允许偏差）
+# ✅ 避免边缘过度加噪（平滑的 Diff 去除了伪影）
+# 
+# 调试建议：
+# 1. 前期训练 (0-20k iter):
+#    - guidance_loss_weight: 1.0 (强引导)
+#    - sparsity_weight: 0.01
+# 
+# 2. 中期微调 (20k-50k iter):
+#    - guidance_loss_weight: 0.5 (放松约束)
+#    - sparsity_weight: 0.01
+# 
+# 3. 后期优化 (50k+ iter):
+#    - guidance_loss_weight: 0.1 (仅作参考)
+#    - sparsity_weight: 0.005 (进一步放松)
+# 
+# 或者全程使用固定权重，让主任务自动平衡。
+# ========================================

@@ -1,0 +1,414 @@
+# ========================================
+# 🔥 基于 Diff 引导的稳健训练策略
+# Guidance Loss + Sparsity Loss
+# ========================================
+
+name: contrast_regression_guidance_v2  # 🔥 新版本：min_noise=0.2 + x²映射
+model_target: basicsr.models.upsr_real_model.UPSRRealModel
+scale: 4
+num_gpu: 2
+manual_seed: 0
+queue_size: 168
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: ImageNet
+    type: RealESRGANDataset
+    dataroot_gt: /dataset/ImageNet/ILSVRC2012_TRAIN/train
+    meta_info_file: basicsr/data/meta_info/meta_info_ImageNet_GT_correct.txt
+    filename_tmpl: '{}'
+    io_backend:
+      type: disk
+    
+    mean: 0.5
+    std: 0.5
+
+    blur_kernel_size: 21
+    kernel_list: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
+    kernel_prob: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
+    sinc_prob: 0.1
+    blur_sigma: [0.2, 3]
+    betag_range: [0.5, 4]
+    betap_range: [1, 2]
+
+    blur_kernel_size2: 15
+    kernel_list2: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
+    kernel_prob2: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
+    sinc_prob2: 0.1
+    blur_sigma2: [0.2, 1.5]
+    betag_range2: [0.5, 4]
+    betap_range2: [1, 2]
+
+    final_sinc_prob: 0.8
+
+    gt_size: 256
+    rescale_gt: false
+    crop_pad_size: 256
+    use_hflip: true
+    use_rot: true
+
+    num_worker_per_gpu: 8  # 🔥 增加worker提升数据加载速度
+    batch_size_per_gpu: 28  # 🔥 从16增加到32，充分利用显存
+    micro_batchsize: 28     # 🔥 保持与batch_size一致，避免梯度累积
+    dataset_enlarge_ratio: 1
+    prefetch_mode: cuda
+    pin_memory: true
+    persistent_workers: true
+
+  val_1:
+    name: imagenet256
+    type: PairedImageDataset
+    dataroot_gt: /dataset/ImageNet/imagenet256/gt
+    dataroot_lq: /dataset/ImageNet/imagenet256/lq
+    io_backend:
+      type: disk
+    batch_size: 32
+
+# network structures
+network_g:
+  target: basicsr.archs.swin_unet_arch.UNetModelSwin
+  params:
+    image_size: 64
+    in_channels: 48
+    model_channels: 160
+    out_channels: 3
+    attention_resolutions: [64,32,16,8]
+    dropout: 0
+    channel_mult: [1, 2, 2, 4]
+    num_res_blocks: [2, 2, 2, 2]
+    conv_resample: true
+    dims: 2
+    use_fp16: false
+    num_head_channels: 32
+    use_scale_shift_norm: true
+    resblock_updown: false
+    swin_depth: 2
+    swin_embed_dim: 192
+    window_size: 8
+    mlp_ratio: 4
+    cond_lq: true
+    lq_size: 64
+    num_feat: 128
+
+diffusion:
+  un: 0.1
+  min_noise: 0.2  # 🔥 提升底噪到0.2，避免过度平滑
+  target: models.script_util.create_gaussian_diffusion
+  params:
+    sf: 4
+    schedule_name: exponential
+    schedule_kwargs:
+      power: 0.2
+    etas_end: 0.99
+    steps: 5
+    min_noise_level: 0.2
+    kappa: 2.5
+    weighted_mse: false
+    predict_type: xstart
+    timestep_respacing: ~
+    scale_factor: 1.0
+    normalize_input: true
+    latent_flag: false
+
+network_mse:
+  target: basicsr.archs.atd_real_arch.ATD
+  ckpt: 
+    path: experiments/pretrained_models/atd_real.pth
+    strict_load_mse: true
+    param_key_mse: params_ema
+  params:
+    upscale: 4
+    in_chans: 3
+    img_size: 64
+    embed_dim: 96
+    depths: [6, 6, 6, 6]
+    num_heads: [4, 4, 4, 4]
+    window_size: 16
+    category_size: 128
+    num_tokens: 64
+    reducted_dim: 8
+    convffn_kernel_size: 7
+    img_range: 1.
+    mlp_ratio: 1
+    upsampler: 'pixelshuffledirect'
+    resi_connection: '1conv'
+    use_checkpoint: false
+
+# 🔥 Uncertainty Mapping - 从预训练checkpoint继续训练
+uncertainty_mapping:
+  use_learnable: true
+  type: content_aware  # 使用内容感知映射
+  
+  # 内容感知映射特有参数
+  hidden_channels: 64      # 特征提取隐藏层通道数（默认64）
+  num_heads: 4             # Cross-Attention头数（默认4）
+  window_size: 8           # 窗口注意力大小（内存优化）
+  
+  # ============================================================
+  # 训练策略：只训练mapper，冻结主网络和其他模块
+  # ============================================================
+  staged_training: false   # 不使用分阶段训练
+  freeze_main_network: true   #  冻结主网络（使用预训练权重）
+  freeze_others_initially: false
+  
+  # 学习率配置
+  mapper_lr_scale: 1.0        # 映射层使用基础学习率
+  main_lr_scale: 1.0          # 主网络也使用基础学习率
+  
+  # 🔥 从头训练，不加载checkpoint
+  # ckpt_path: ~
+  # strict_load: false
+
+# path
+path:
+  # 🔥 加载预训练的UPSR主网络（冻结，不训练）
+  pretrain_network_g: experiments/pretrained_models/upsr.pth
+  strict_load_g: true
+  param_key_g: params_ema  # 使用EMA参数
+  # resume_state: ~  # 不恢复训练状态，从头开始训练mapper
+  
+  # 新的实验目录
+  experiments_root: experiments/contrast_regression_guidance_v2
+  models: experiments/contrast_regression_guidance_v2/models
+  training_states: experiments/contrast_regression_guidance_v2/training_states
+  log: experiments/contrast_regression_guidance_v2
+  visualization: experiments/contrast_regression_guidance_v2/visualization
+
+# training settings
+train:
+  use_fp16: true
+  ema_decay: 0.999
+  
+  # 总训练步数
+  total_iter: 100000
+  warmup_iter: 500  # warmup 500次
+  
+  # optimizer for main network
+  optim_g:
+    type: AdamW
+    lr: !!float 2e-4
+    weight_decay: 0.0005
+    betas: [0.9, 0.999]
+
+  # 🔥 核心：改进的 Guidance Loss（对比学习 + 弱回归）
+  # 关键改进：
+  # 1. Contrastive Loss: 确保困难区域 uncertainty > 容易区域 uncertainty（相对排序）
+  # 2. Weak Regression Loss: 防止分布坍缩，保持与真实误差的大致一致性
+  # 3. Adaptive Margin: 根据真实困难度差异自动调整margin
+  
+  # Guidance Loss 总权重
+  guidance_loss_weight: 0.05
+  # 建议值：
+  # - 初期训练: 0.05-0.1 (提供引导但不过度约束)
+  # - 微调阶段: 0.01-0.03 (给模型更多自由度)
+  # - 仅作参考: 0.005 (主要靠扩散损失优化)
+  
+  # Contrastive Loss 权重 (相对于guidance_loss_weight)
+  contrast_weight: 1.0
+  # 含义：确保 hard_region_uncertainty - easy_region_uncertainty >= adaptive_margin
+  # 建议值：
+  # - 标准: 1.0 (对比学习为主要约束)
+  # - 强调排序: 1.5-2.0 (更严格的相对排序)
+  # - 弱化排序: 0.5-0.7 (更多依赖回归)
+  
+  # Weak Regression Loss 权重 (相对于guidance_loss_weight)
+  regression_weight: 0.3
+  # 含义：保持 uncertainty 分布与 diff_gt 大致一致
+  # 建议值：
+  # - 标准: 0.3 (防止坍缩，不过度拟合)
+  # - 更强回归: 0.5-0.7 (接近传统回归)
+  # - 仅防坍缩: 0.1-0.2 (主要靠对比学习)
+  
+  # 🔥 新增：Diff_GT 计算模式
+  diff_gt_mode: 'max'  # 'bicubic', 'sr', 'max', 'weighted'
+  # - 'bicubic': diff_gt = |Bicubic - GT| (反映初始困难度)
+  # - 'sr': diff_gt = |SR - GT| (反映SR预测误差，原方案)
+  # - 'max': diff_gt = max(|Bicubic - GT|, |SR - GT|) ⭐推荐
+  # - 'weighted': diff_gt = α*|Bicubic-GT| + (1-α)*|SR-GT|
+  
+  bicubic_weight: 0.7  # 仅在 diff_gt_mode='weighted' 时使用
+  # 建议值：
+  # - 偏向初始困难度: 0.7-0.8
+  # - 平衡: 0.5
+  # - 偏向SR误差: 0.2-0.3
+  
+  # 基础损失
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0
+    reduction: mean
+
+  perceptual_opt:
+    lpips_weight: 0.5
+
+  # scheduler
+  scheduler:
+    type: TrueCosineAnnealingLR
+    T_max: 100000
+    eta_min: !!float 1e-5
+
+# degradation settings
+degradation:
+  scale: 4
+  resize_prob: [0.2, 0.7, 0.1]
+  resize_range: [0.15, 1.5]
+  gaussian_noise_prob: 0.5
+  noise_range: [1, 30]
+  poisson_scale_range: [0.05, 3.0]
+  gray_noise_prob: 0.4
+  jpeg_range: [30, 95]
+
+  second_order_prob: 0.5
+  second_blur_prob: 0.8
+  resize_prob2: [0.3, 0.4, 0.3]
+  resize_range2: [0.3, 1.2]
+  gaussian_noise_prob2: 0.5
+  noise_range2: [1, 25]
+  poisson_scale_range2: [0.05, 2.5]
+  gray_noise_prob2: 0.4
+  jpeg_range2: [30, 95]
+
+  gt_size: 256
+  resize_back: false
+  use_sharp: false
+
+# losses - 高阶退化设置
+high_order_degradation: true
+
+# validation settings
+val:
+  val_freq: !!float 5e3
+  save_img: true
+  save_diff_heatmap: false  # 不保存 Diff 热力图（加快验证速度）
+  save_uncertainty_heatmap: false  # 不保存 Uncertainty 热力图
+  
+  desired_min_size: 64
+  chop_size: 512
+  chop_stride: 448
+  chop_bs: 1
+  noise_repeat: false
+  pbar: true
+
+  metrics:
+    lpips:
+      fr: true
+      better: lower
+    
+    clipiqa:
+      fr: false
+      better: higher
+    
+    musiq:
+      fr: false  
+      better: higher
+    
+    niqe:
+      fr: false
+      better: lower
+    
+    # 传统指标作为参考
+    psnr:
+      fr: true
+      better: higher
+    
+    ssim:
+      fr: true
+      better: higher
+    
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500
+
+# ========================================
+# 🎯 训练策略说明（改进版 v2）
+# ========================================
+# 
+# 这个配置使用 **对比学习 + 弱回归** 来训练 Uncertainty Mapper：
+# 
+# 1. **Contrastive Loss (对比学习，权重 1.0)**
+#    - 核心思想：困难区域的 uncertainty 应该 > 容易区域
+#    - 实现：loss = ReLU(adaptive_margin - (hard_mean - easy_mean))
+#    - Adaptive Margin：根据真实困难度差异自动调整
+#      - margin = (target_hard - target_easy) * 0.5
+#      - clamp 到 [0.1, 0.4] 避免极端情况
+#    - 优势：
+#      ✅ 学习相对排序，不依赖绝对值
+#      ✅ 对数据分布变化鲁棒
+#      ✅ 避免人为设计的 threshold
+# 
+# 2. **Weak Regression Loss (弱回归，权重 0.3)**
+#    - 核心思想：防止分布坍缩，保持与 diff_gt 大致一致
+#    - 实现：loss = SmoothL1(micro_uncertainty, target_map)
+#    - SmoothL1 特性：
+#      - 小误差用 L2（平滑梯度）
+#      - 大误差用 L1（对异常值鲁棒）
+#    - 优势：
+#      ✅ 防止所有区域预测相同值
+#      ✅ 保持分布的大致形状
+#      ✅ 不会过度拟合 target_map
+# 
+# 3. **Diff_GT 计算模式 (diff_gt_mode: 'max')**
+#    - 'max' 模式：同时考虑 Bicubic 和 SR 的误差
+#      - diff_bicubic = |Bicubic - GT| / 2  (初始困难度)
+#      - diff_sr = |SR - GT| / 2             (SR预测误差)
+#      - diff_gt = max(diff_bicubic, diff_sr)
+#    - 优势：
+#      ✅ 平滑区域：两者都小 → uncertainty低
+#      ✅ 高频纹理：Bicubic大 → uncertainty高
+#      ✅ SR预测错误：SR大 → uncertainty高
+#      ✅ 覆盖所有场景
+# 
+# 4. **损失组合**
+#    - Standardized Losses:
+#      - loss_contrast_norm = loss_contrast / 0.4
+#      - 归一化到相同量级，便于加权
+#    - Final Loss:
+#      - guidance_loss = contrast_weight * loss_contrast_norm + 
+#                       regression_weight * loss_reg
+#      - total_loss = l_pix + l_lpips + guidance_loss_weight * guidance_loss
+# 
+# 优势对比旧版：
+# ❌ 旧版 (guidance + sparsity):
+#    - Guidance 学习固定映射 uncertainty ≈ smooth(diff)
+#    - Sparsity 与 Guidance 可能冲突
+#    - 边缘可能过度加噪（Diff 包含伪影）
+# 
+# ✅ 新版 (contrastive + regression):
+#    - 对比学习：数据驱动的相对排序
+#    - 弱回归：防止坍缩，不过度约束
+#    - Diff_GT 选择：max 模式覆盖更全面
+#    - 自适应 Margin：根据数据调整约束强度
+# 
+# 调试建议：
+# 1. 监控日志中的 l_contrast 和 l_reg：
+#    - l_contrast 应该逐渐下降（学会排序）
+#    - l_reg 保持在一个稳定的小值（分布接近但不完全一致）
+#    - 如果 l_contrast 不下降：增加 contrast_weight
+#    - 如果 l_reg 过大：检查 diff_gt_mode 是否合理
+# 
+# 2. 观察 adaptive_margin（1%概率打印）：
+#    - 正常范围：0.1-0.4
+#    - 如果总是 clamp 到边界：数据可能有问题
+# 
+# 3. 检查 hard_mean 和 easy_mean：
+#    - hard_mean > easy_mean：正常
+#    - 两者接近：网络还没学会区分困难度
+#    - 差距过大：可能过拟合 target_map
+# 
+# 4. 消融实验：
+#    - 只用 contrastive (regression_weight=0)：可能坍缩
+#    - 只用 regression (contrast_weight=0)：退化为旧版
+#    - diff_gt_mode='bicubic' vs 'sr' vs 'max'：比较效果
+# ========================================

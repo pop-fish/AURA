@@ -1,0 +1,180 @@
+# general settings
+name: test_stage2_30k
+model_target: basicsr.models.upsr_real_model.UPSRRealModel
+scale: 4
+num_gpu: 1
+manual_seed: 0
+
+# dataset and data loader settings
+# dataset and data loader settings
+datasets:
+  # val_1:
+  #   name: imagenet256
+  #   type: PairedImageDataset
+  #   dataroot_gt: /dataset/ImageNet/imagenet256/gt
+  #   dataroot_lq: /dataset/ImageNet/imagenet256/lq
+  #   io_backend:
+  #     type: disk
+  #   batch_size: 32
+  
+  # val_1:
+  #   name: RealSRV3
+  #   type: PairedImageDataset
+  #   dataroot_gt: /dataset/real2019/Test_HR_100
+  #   dataroot_lq: /dataset/real2019/Test_LR_100_bicubic
+  #   io_backend:
+  #     type: disk
+
+  # val_3:
+  #   name: RealSet65
+  #   type: SingleImageDataset
+  #   dataroot_lq: /dataset/RealSet/RealSet65
+  #   io_backend:
+  #     type: disk
+
+  val_1:
+    name: DIV2K
+    type: PairedImageDataset
+    dataroot_gt: /dataset/DIV/DIV/DIV2K/valid_HR/DIV2K_valid_HR
+    dataroot_lq: /dataset/DIV/DIV/DIV2K/valid_LR_bicubic
+    io_backend:
+      type: disk
+
+# network structures
+network_g:
+  target: basicsr.archs.swin_unet_arch.UNetModelSwin
+  params:
+    image_size: 64
+    in_channels: 48
+    model_channels: 160
+    out_channels: 3
+    attention_resolutions: [64,32,16,8]
+    dropout: 0
+    channel_mult: [1, 2, 2, 4]
+    num_res_blocks: [2, 2, 2, 2]
+    conv_resample: True
+    dims: 2
+    use_fp16: False
+    num_head_channels: 32
+    use_scale_shift_norm: True
+    resblock_updown: False
+    swin_depth: 2
+    swin_embed_dim: 192
+    window_size: 8
+    mlp_ratio: 4
+    cond_lq: True
+    lq_size: 64
+    num_feat: 128
+
+diffusion:
+  un: 0.1
+  min_noise: 0.2  # 🔥 底噪保持一定强度
+  target: models.script_util.create_gaussian_diffusion
+  params:
+    sf: 4
+    schedule_name: exponential
+    schedule_kwargs:
+      power: 0.2
+    etas_end: 0.99
+    steps: 5
+    min_noise_level: 0.2
+    kappa: 2.5
+    weighted_mse: False
+    predict_type: xstart
+    timestep_respacing: ~
+    scale_factor: 1.0
+    normalize_input: True
+    latent_flag: False
+
+network_mse:
+  target: basicsr.archs.atd_real_arch.ATD
+  ckpt: 
+    path: experiments/pretrained_models/atd_real.pth
+    strict_load_mse: true
+    param_key_mse: params_ema
+  params:
+    upscale: 4
+    in_chans: 3
+    img_size: 64
+    embed_dim: 96
+    depths: [6, 6, 6, 6, ]
+    num_heads: [4, 4, 4, 4, ]
+    window_size: 16
+    category_size: 128
+    num_tokens: 64
+    reducted_dim: 8
+    convffn_kernel_size: 7
+    img_range: 1.
+    mlp_ratio: 1
+    upsampler: 'pixelshuffledirect'
+    resi_connection: '1conv'
+    use_checkpoint: false
+
+# Uncertainty Mapping (Stage1 trained model)
+uncertainty_mapping:
+# #   use_learnable: True
+# #   type: spatial
+# #   hidden_dim: 64
+# #   num_layers: 3
+# #   ckpt_path: experiments/stage1_100k+15kwarm_up_spatial_13000best/models/uncertainty_mapper_13000.pth
+
+  use_learnable: true
+  type: content_aware  # ✅ 使用新的内容感知映射
+  
+  # 内容感知映射特有参数
+  hidden_channels: 64      # 特征提取隐藏层通道数（默认64）
+  num_heads: 4             # Cross-Attention头数（默认4）
+  window_size: 8 
+  ckpt_path: experiments/v2_learnable_uncertainty_with_guidance/models/uncertainty_mapper_65000.pth
+
+# path - 使用 30k iter 的最佳模型
+path:
+  # pretrain_network_g: experiments/stage1_learnable_mapper_only_5k_spatial/models/net_g_5000.pth
+  # pretrain_network_g: experiments/stage1_content_aware_10k_best9k/models/net_g_9000.pth
+  pretrain_network_g: experiments/pretrained_models/upsr.pth
+  # pretrain_network_g: experiments/stage1_100k+15kwarm_up_spatial_13000best/models/net_g_13000.pth
+  strict_load_g: true
+
+# validation settings
+val:
+  save_img: true
+  save_diff_heatmap: true          # 启用Diff热力图
+  save_uncertainty_heatmap: false    # 启用Uncertainty热力图
+  suffix: ~
+  pbar: true
+  desired_min_size: 64
+  chop_size: 512
+  chop_stride: 448
+  chop_bs: 1
+  noise_repeat: false
+
+  metrics:
+    psnr:
+      fr: true
+
+    ssim:
+      fr: true
+
+    lpips:
+      fr: true
+      better: lower
+    
+    clipiqa:
+      fr: false
+
+    musiq:
+      fr: false
+
+    niqe:
+      fr: false
+      better: lower
+
+# logging settings
+logger:
+  print_freq: 100
+  use_tb_logger: false
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500

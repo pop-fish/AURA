@@ -1,0 +1,6 @@
+.DS_Store
+
+experiments/
+results/
+*.pth
+*.sh
