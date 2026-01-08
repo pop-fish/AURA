@@ -426,16 +426,73 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
         if self.use_pretrained_semantic:
             if semantic_model == 'clip' and TRANSFORMERS_AVAILABLE:
                 # 使用CLIP视觉编码器
-                self.logger.info("Loading pretrained CLIP-ViT-B/32 for semantic feature extraction")
-                self.semantic_encoder = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32")
-                self.clip_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
-                semantic_dim = 768  # CLIP-ViT-B/32输出维度
+                self.logger.info("🔥 Loading pretrained CLIP-ViT-B/32 for semantic feature extraction")
                 
-                # 冻结CLIP参数
-                for param in self.semantic_encoder.parameters():
-                    param.requires_grad = False
-                self.semantic_encoder.eval()
-                self.logger.info("CLIP encoder loaded and frozen")
+                # 🔥 优先尝试本地路径
+                import os
+                local_clip_paths = [
+                    "/root/.cache/huggingface/hub/models--openai--clip-vit-base-patch32",
+                    os.path.expanduser("~/.cache/huggingface/hub/models--openai--clip-vit-base-patch32"),
+                    os.path.expanduser("~/.cache/huggingface/hub/clip-vit-base-patch32"),
+                ]
+                
+                clip_loaded = False
+                for local_path in local_clip_paths:
+                    if os.path.exists(local_path):
+                        try:
+                            self.logger.info(f"   ✅ Found local CLIP model at: {local_path}")
+                            self.logger.info(f"   Loading from local cache...")
+                            
+                            # 从本地加载，不连接网络
+                            self.semantic_encoder = CLIPVisionModel.from_pretrained(
+                                local_path,
+                                local_files_only=True
+                            )
+                            self.clip_processor = CLIPImageProcessor.from_pretrained(
+                                local_path,
+                                local_files_only=True
+                            )
+                            
+                            self.logger.info(f"   ✅ Successfully loaded CLIP from local cache")
+                            clip_loaded = True
+                            break
+                        except Exception as e:
+                            self.logger.warning(f"   ⚠️  Failed to load from {local_path}: {e}")
+                            continue
+                
+                # 如果本地加载失败，尝试在线下载
+                if not clip_loaded:
+                    try:
+                        self.logger.warning("   ⚠️  Local CLIP not found, attempting online download...")
+                        self.semantic_encoder = CLIPVisionModel.from_pretrained(
+                            "openai/clip-vit-base-patch32",
+                            cache_dir=os.path.expanduser("~/.cache/huggingface/hub"),
+                            resume_download=True,
+                            timeout=60
+                        )
+                        self.clip_processor = CLIPImageProcessor.from_pretrained(
+                            "openai/clip-vit-base-patch32",
+                            cache_dir=os.path.expanduser("~/.cache/huggingface/hub"),
+                            timeout=60
+                        )
+                        self.logger.info("   ✅ CLIP downloaded successfully")
+                        clip_loaded = True
+                    except Exception as e:
+                        self.logger.error(f"   ❌ Failed to download CLIP: {e}")
+                        self.logger.warning("   ⚠️  Falling back to DeiT or simple encoder")
+                
+                if clip_loaded:
+                    semantic_dim = 768  # CLIP-ViT-B/32输出维度
+                    
+                    # 冻结CLIP参数
+                    for param in self.semantic_encoder.parameters():
+                        param.requires_grad = False
+                    self.semantic_encoder.eval()
+                    self.logger.info("   ✅ CLIP encoder frozen and ready")
+                else:
+                    # CLIP加载失败，标记为不使用预训练模型
+                    self.use_pretrained_semantic = False
+                    semantic_dim = hidden_channels
             else:
                 # 降级方案：使用timm的预训练模型
                 try:

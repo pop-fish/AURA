@@ -207,45 +207,6 @@ train:
     wandb:
       project: ~
       resume_id: ~
-  
-  val:
-    val_freq: !!float 5e3
-    save_img: true
-    save_diff_heatmap: false  # 不保存 Diff 热力图（加快验证速度）
-    save_uncertainty_heatmap: false  # 不保存 Uncertainty 热力图
-    
-    desired_min_size: 64
-    chop_size: 512
-    chop_stride: 448
-    chop_bs: 1
-    noise_repeat: false
-    pbar: true
-    
-    metrics:
-      # 传统指标作为参考
-      psnr:
-        fr: true
-        better: higher
-      
-      ssim:
-        fr: true
-        better: higher
-
-      lpips:
-        fr: true
-        better: lower
-      
-      clipiqa:
-        fr: false
-        better: higher
-      
-      musiq:
-        fr: false  
-        better: higher
-      
-      niqe:
-        fr: false
-        better: lower
       
       
 
