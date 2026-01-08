@@ -90,15 +90,17 @@ class UPSRRealModel(SRModel):
                     hidden_channels=uncertainty_mapping_opt.get('hidden_channels', 32)
                 ).to(self.device)
             elif mapping_type == 'content_aware':
-                # ✅ 新增：内容感知的空间映射
-                logger.info("Using content-aware spatial uncertainty mapping with window-based cross-attention")
+                # ✅ 新增：内容感知的空间映射（带预训练语义编码器）
+                logger.info("Using content-aware spatial uncertainty mapping with pretrained semantic encoder")
                 self.uncertainty_mapper = ContentAwareSpatialUncertaintyMapping(
                     un_max=un_max,
                     min_noise=min_noise,
                     channels=3,  # RGB图像
                     hidden_channels=uncertainty_mapping_opt.get('hidden_channels', 64),
                     num_heads=uncertainty_mapping_opt.get('num_heads', 4),
-                    window_size=uncertainty_mapping_opt.get('window_size', 8)
+                    window_size=uncertainty_mapping_opt.get('window_size', 8),
+                    use_pretrained_semantic=uncertainty_mapping_opt.get('use_pretrained_semantic', True),
+                    semantic_model=uncertainty_mapping_opt.get('semantic_model', 'clip')  # 'clip' or 'deit'
                 ).to(self.device)
             else:  # 'mlp'
                 self.uncertainty_mapper = LearnableUncertaintyMapping(
@@ -480,7 +482,14 @@ class UPSRRealModel(SRModel):
             if last_batch or self.opt['num_gpu'] <= 1:
                 losses, x_t, x0_pred = self.backward_step(compute_losses, micro_lq, micro_gt, num_grad_accumulate, tt, constraint_loss)
             else:
-                with self.net_g.no_sync():
+                # 检查是否使用了DistributedDataParallel
+                # DataParallel没有no_sync()方法，需要特殊处理
+                if hasattr(self.net_g, 'no_sync'):
+                    # 使用DDP时，no_sync()可以避免中间batch的梯度同步
+                    with self.net_g.no_sync():
+                        losses, x_t, x0_pred = self.backward_step(compute_losses, micro_lq, micro_gt, num_grad_accumulate, tt, constraint_loss)
+                else:
+                    # 使用DataParallel或单GPU时，直接执行backward
                     losses, x_t, x0_pred = self.backward_step(compute_losses, micro_lq, micro_gt, num_grad_accumulate, tt, constraint_loss)
             
             loss_dict['l_pix'] += losses['l_pix']

@@ -5,7 +5,16 @@ Learnable Uncertainty Mapping Module for UPSR
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from basicsr.utils import get_root_logger
+
+# 尝试导入transformers中的CLIP模型
+try:
+    from transformers import CLIPVisionModel, CLIPImageProcessor
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    print("Warning: transformers not available, falling back to timm models")
 
 
 class LearnableUncertaintyMapping(nn.Module):
@@ -379,15 +388,15 @@ class CrossAttentionBlock(nn.Module):
 
 class ContentAwareSpatialUncertaintyMapping(nn.Module):
     """
-    内容感知的空间不确定度映射
+    内容感知的空间不确定度映射（带预训练CLIP编码器）
     
-    使用LQ图像特征通过Cross-Attention调制diff特征，
-    实现内容自适应的不确定度估计
+    使用预训练CLIP模型提取LQ图像的语义特征，通过Cross-Attention调制diff特征，
+    实现语义引导的内容自适应不确定度估计
     
-    核心思想：
-    - LQ图像提供内容和退化信息
-    - Diff提供SR预测质量信息  
-    - Cross-Attention学习如何根据LQ内容调制不确定度
+    核心改进：
+    - 🔥 使用预训练CLIP提取语义特征（全局理解能力）
+    - LQ图像 → CLIP → 语义token（丰富的预训练知识）
+    - Diff特征 query 语义特征 → 内容感知的不确定度
     
     Args:
         un_max (float): 不确定度的最大值
@@ -395,39 +404,102 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
         channels (int): 输入通道数（RGB=3）
         hidden_channels (int): 隐藏层通道数
         num_heads (int): 注意力头数
+        use_pretrained_semantic (bool): 是否使用预训练语义编码器（默认True）
+        semantic_model (str): 语义编码器类型 ('clip' or 'deit')
     """
     
-    def __init__(self, un_max=1.0, min_noise=0.2, channels=3, hidden_channels=64, num_heads=4, window_size=8):
+    def __init__(self, un_max=1.0, min_noise=0.2, channels=3, hidden_channels=64, 
+                 num_heads=4, window_size=8, use_pretrained_semantic=True, 
+                 semantic_model='clip'):
         super().__init__()
         self.un_max = un_max
         self.min_noise = 0.2  # 🔥 提升底噪到0.2，避免过度平滑
+        self.use_pretrained_semantic = use_pretrained_semantic
+        self.semantic_model = semantic_model
         
         # 初始化logger和调用计数器
         self.logger = get_root_logger()
         self.forward_count = 0
         self._first_call_logged = False
         
-        # LQ特征提取器
+        # 🔥 预训练语义编码器（CLIP或其他）
+        if self.use_pretrained_semantic:
+            if semantic_model == 'clip' and TRANSFORMERS_AVAILABLE:
+                # 使用CLIP视觉编码器
+                self.logger.info("Loading pretrained CLIP-ViT-B/32 for semantic feature extraction")
+                self.semantic_encoder = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32")
+                self.clip_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
+                semantic_dim = 768  # CLIP-ViT-B/32输出维度
+                
+                # 冻结CLIP参数
+                for param in self.semantic_encoder.parameters():
+                    param.requires_grad = False
+                self.semantic_encoder.eval()
+                self.logger.info("CLIP encoder loaded and frozen")
+            else:
+                # 降级方案：使用timm的预训练模型
+                try:
+                    import timm
+                    self.logger.info("Loading pretrained DeiT-tiny for semantic feature extraction")
+                    self.semantic_encoder = timm.create_model('deit_tiny_patch16_224', pretrained=True, num_classes=0)
+                    semantic_dim = 192  # DeiT-tiny输出维度
+                    
+                    # 冻结参数
+                    for param in self.semantic_encoder.parameters():
+                        param.requires_grad = False
+                    self.semantic_encoder.eval()
+                    self.logger.info("DeiT encoder loaded and frozen")
+                except ImportError:
+                    self.logger.warning("Neither transformers nor timm available, using simple CNN encoder")
+                    self.use_pretrained_semantic = False
+                    semantic_dim = hidden_channels
+        else:
+            semantic_dim = hidden_channels
+        
+        # LQ局部特征提取器（用于与语义特征融合）
         self.lq_encoder = nn.Sequential(
             nn.Conv2d(channels, hidden_channels, 3, padding=1),
-            nn.GroupNorm(num_groups=8, num_channels=hidden_channels),  # ✅ 修改
+            nn.GroupNorm(num_groups=8, num_channels=hidden_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(hidden_channels, hidden_channels, 3, padding=1),
-            nn.GroupNorm(num_groups=8, num_channels=hidden_channels),  # ✅ 修改
+            nn.GroupNorm(num_groups=8, num_channels=hidden_channels),
             nn.ReLU(inplace=True),
         )
         
         # Diff特征提取器
         self.diff_encoder = nn.Sequential(
             nn.Conv2d(channels, hidden_channels, 3, padding=1),
-            nn.GroupNorm(num_groups=8, num_channels=hidden_channels),  # ✅ 修改
+            nn.GroupNorm(num_groups=8, num_channels=hidden_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(hidden_channels, hidden_channels, 3, padding=1),
-            nn.GroupNorm(num_groups=8, num_channels=hidden_channels),  # ✅ 修改
+            nn.GroupNorm(num_groups=8, num_channels=hidden_channels),
             nn.ReLU(inplace=True),
         )
         
-        # Window-based Cross-Attention模块（内存高效）
+        # 🔥 语义特征投影层（将CLIP/DeiT特征映射到hidden_channels）
+        if self.use_pretrained_semantic:
+            self.semantic_proj = nn.Sequential(
+                nn.Linear(semantic_dim, hidden_channels),
+                nn.LayerNorm(hidden_channels),
+                nn.GELU()
+            )
+            self.logger.info(f"Semantic projection: {semantic_dim} -> {hidden_channels}")
+        
+        # 🔥 改进的Cross-Attention：LQ query语义特征（如果使用预训练模型）
+        # 否则使用原来的window-based attention
+        if self.use_pretrained_semantic:
+            # Token-based Cross-Attention（LQ spatial tokens query semantic tokens）
+            self.semantic_cross_attn = nn.MultiheadAttention(
+                embed_dim=hidden_channels,
+                num_heads=num_heads,
+                batch_first=True,
+                dropout=0.1
+            )
+            self.norm_before_cross = nn.LayerNorm(hidden_channels)
+            self.norm_after_cross = nn.LayerNorm(hidden_channels)
+            self.logger.info("Using semantic-guided cross-attention")
+        
+        # Window-based Cross-Attention模块（用于局部特征融合）
         self.cross_attn = CrossAttentionBlock(
             dim=hidden_channels,
             num_heads=num_heads,
@@ -500,16 +572,17 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
     
     def forward(self, diff, lq):
         """
-        前向传播
+        前向传播（带语义引导）
         
         Args:
             diff (Tensor): SR预测差异，形状 [B, C, H, W]
             lq (Tensor): LQ图像（已上采样到HR尺寸），形状 [B, C, H, W]，范围 [0, 1]
         
         Returns:
-            Tensor: 内容感知的不确定度权重，形状 [B, C, H, W]
+            Tensor: 语义感知的不确定度权重，形状 [B, C, H, W]
         """
         self.forward_count += 1
+        B, C, H, W = diff.shape
         
         # 第一次调用时记录详细信息
         if not self._first_call_logged:
@@ -518,6 +591,7 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
             self.logger.info(f"Input shapes: diff={diff.shape}, lq={lq.shape}")
             self.logger.info(f"Device: {diff.device}")
             self.logger.info(f"Config: un_max={self.un_max}, min_noise={self.min_noise}")
+            self.logger.info(f"Use pretrained semantic: {self.use_pretrained_semantic}")
             self.logger.info(f"{'='*70}\n")
             self._first_call_logged = True
         
@@ -534,15 +608,66 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
         diff_norm = torch.abs(diff).clamp_(0., self.un_max) / self.un_max
         lq_norm = lq  # LQ已经在[0,1]范围
         
-        # 特征提取
+        # 🔥 提取语义特征（使用预训练模型）
+        if self.use_pretrained_semantic:
+            with torch.no_grad():
+                # 准备输入：调整到224x224（CLIP/DeiT标准输入）
+                lq_resized = F.interpolate(lq_norm, size=(224, 224), mode='bilinear', align_corners=False)
+                
+                if self.semantic_model == 'clip' and TRANSFORMERS_AVAILABLE:
+                    # CLIP需要特定的预处理
+                    # 将[0,1]转换为CLIP期望的范围和归一化
+                    lq_input = lq_resized * 2 - 1  # [0,1] -> [-1,1]
+                    semantic_output = self.semantic_encoder(lq_input)
+                    semantic_feat = semantic_output.last_hidden_state  # [B, num_patches+1, 768]
+                else:
+                    # DeiT或其他timm模型
+                    # 归一化到ImageNet统计量
+                    mean = torch.tensor([0.485, 0.456, 0.406], device=lq_resized.device).view(1, 3, 1, 1)
+                    std = torch.tensor([0.229, 0.224, 0.225], device=lq_resized.device).view(1, 3, 1, 1)
+                    lq_input = (lq_resized - mean) / std
+                    semantic_feat = self.semantic_encoder.forward_features(lq_input)  # [B, num_patches+1, dim]
+            
+            # 投影语义特征到hidden_channels
+            semantic_feat_proj = self.semantic_proj(semantic_feat)  # [B, N_tokens, hidden_channels]
+            
+            if self.forward_count % 5000 == 1:
+                self.logger.info(f"  Semantic features: {semantic_feat.shape} -> {semantic_feat_proj.shape}")
+        
+        # 局部特征提取
         lq_feat = self.lq_encoder(lq_norm)      # [B, D, H, W]
         diff_feat = self.diff_encoder(diff_norm)  # [B, D, H, W]
         
-        # Cross-Attention: LQ特征调制Diff特征
-        # Query来自LQ（询问"这个位置的内容需要多大不确定度"）
+        # 🔥 语义引导的Cross-Attention
+        if self.use_pretrained_semantic:
+            # 将LQ spatial features转换为tokens
+            lq_tokens = lq_feat.flatten(2).permute(0, 2, 1)  # [B, H*W, D]
+            lq_tokens = self.norm_before_cross(lq_tokens)
+            
+            # Cross-Attention: LQ tokens query semantic tokens
+            lq_tokens_semantic, _ = self.semantic_cross_attn(
+                query=lq_tokens,
+                key=semantic_feat_proj,
+                value=semantic_feat_proj
+            )  # [B, H*W, D]
+            
+            # 残差连接
+            lq_tokens_semantic = lq_tokens + lq_tokens_semantic
+            lq_tokens_semantic = self.norm_after_cross(lq_tokens_semantic)
+            
+            # 恢复为spatial feature map
+            lq_feat_semantic = lq_tokens_semantic.permute(0, 2, 1).reshape(B, -1, H, W)  # [B, D, H, W]
+            
+            if self.forward_count % 5000 == 1:
+                self.logger.info(f"  Semantic-enhanced LQ features: {lq_feat_semantic.shape}")
+        else:
+            lq_feat_semantic = lq_feat
+        
+        # Window-based Cross-Attention: 语义增强的LQ特征调制Diff特征
+        # Query来自语义增强的LQ（询问"这个位置的内容需要多大不确定度"）
         # Key, Value来自Diff（提供"SR预测质量信息"）
         modulated_feat = self.cross_attn(
-            query=lq_feat,
+            query=lq_feat_semantic,
             key_value=diff_feat
         )  # [B, D, H, W]
         
