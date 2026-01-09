@@ -1,14 +1,14 @@
-# 🔥 带语义引导的AURA训练配置
-# 使用预训练CLIP/DeiT编码器提取语义特征，指导不确定度映射
+# 🔥 带语义引导的AURA训练配置 - 感知质量优先版本
+# 使用预训练CLIP编码器提取语义特征，优化感知质量（LPIPS/CLIP-IQA）而非PSNR/SSIM
 
-name: AURA_semantic_guided
+name: AURA_semantic_guided_perceptual  # 🔥 新的实验名称，不会覆盖原实验
 model_target: basicsr.models.upsr_real_model.UPSRRealModel
 scale: 4
 num_gpu: 2
 manual_seed: 0
 queue_size: 168
 
-# 数据集配置
+# 数据集配置（与原版相同）
 datasets:
   train:
     name: ImageNet
@@ -46,9 +46,9 @@ datasets:
     use_hflip: true
     use_rot: true
 
-    num_worker_per_gpu: 8  # 🔥 增加worker提升数据加载速度
-    batch_size_per_gpu: 28  # 🔥 从16增加到32，充分利用显存
-    micro_batchsize: 28     # 🔥 保持与batch_size一致，避免梯度累积
+    num_worker_per_gpu: 8
+    batch_size_per_gpu: 28
+    micro_batchsize: 28
     dataset_enlarge_ratio: 1
     prefetch_mode: cuda
     pin_memory: true
@@ -63,7 +63,7 @@ datasets:
       type: disk
     batch_size: 32
 
-# 网络配置
+# 网络配置（与原版相同）
 network_g:
   target: basicsr.archs.swin_unet_arch.UNetModelSwin
   params:
@@ -91,7 +91,7 @@ network_g:
 
 diffusion:
   un: 0.1
-  min_noise: 0.2  # 🔥 提升底噪到0.2，避免过度平滑
+  min_noise: 0.2
   target: models.script_util.create_gaussian_diffusion
   params:
     sf: 4
@@ -134,70 +134,68 @@ network_mse:
     resi_connection: '1conv'
     use_checkpoint: false
 
-
-# 🔥 可学习的不确定度映射配置（关键改进）
+# 🔥 可学习的不确定度映射配置
 uncertainty_mapping:
   use_learnable: true
-  type: content_aware  # 'mlp', 'spatial', or 'content_aware'
+  type: content_aware
   
   # 🌟 语义编码器配置
-  use_pretrained_semantic: true  # 启用预训练语义编码器
-  semantic_model: clip  # 'clip' 或 'deit'
-  # clip: CLIP-ViT-B/32 (需要transformers库)
-  # deit: DeiT-tiny (需要timm库)
+  use_pretrained_semantic: true
+  semantic_model: clip
   
-  # 网络架构参数
-  hidden_channels: 64  # 隐藏层通道数
-  num_heads: 4  # Cross-Attention头数
-  window_size: 8  # 窗口注意力的窗口大小
+  hidden_channels: 64
+  num_heads: 4
+  window_size: 8
   
   # 训练策略
-  staged_training: false  # 是否分阶段训练（第一阶段只训练mapper）
-  freeze_main_network: true  # 🔥 冻结主网络（使用预训练权重）
+  staged_training: false
+  freeze_main_network: true  # 🔥 冻结主网络
   freeze_others_initially: false
 
-  mapper_lr_scale: 1.0        # 映射层使用基础学习率
-  main_lr_scale: 1.0    # 主网络学习率缩放因子
+  mapper_lr_scale: 1.0
+  main_lr_scale: 1.0
   
-  # 预训练权重（可选）
-  ckpt_path: ~  # 如果有预训练的mapper权重，填写路径
-  strict_load: true
+  # 🔥 如果想加载当前训练的mapper权重（可选）
+  # ckpt_path: experiments/AURA_semantic_guided/models/uncertainty_mapper_15000.pth
+  ckpt_path: ~
+  strict_load: false
 
-# 训练配置
+# 🔥 训练配置 - 感知质量优先
 train:
-  use_fp16: true  # 🔥 启用混合精度训练
+  use_fp16: true
   ema_decay: 0.999
   
-  # 总训练步数
-  total_iter: 100000
-  warmup_iter: 500  # warmup 500次
+  # 🔥 新的训练策略：从头开始，优化感知质量
+  total_iter: 80000  # 80k iterations（相对较少，因为是fine-tuning方向）
+  warmup_iter: 500
   
+  # 🔥 降低学习率（fine-tuning）
   optim_g:
     type: AdamW
-    lr: !!float 2e-4
-    weight_decay: 0.0005
+    lr: !!float 1e-4  # 从2e-4降到1e-4
+    weight_decay: 0.001
     betas: [0.9, 0.999]
   
   scheduler:
     type: TrueCosineAnnealingLR
-    T_max: 100000
-    eta_min: !!float 1e-5
+    T_max: 80000
+    eta_min: !!float 1e-6
   
-  # 🔥 语义引导的约束损失（对比学习 + 弱回归）
-  guidance_loss_weight: 0.05  # Guidance Loss 总权重
-  contrast_weight: 1.0  # 对比学习权重（相对值）
-  regression_weight: 0.3  # 弱回归权重（相对值）
-  diff_gt_mode: 'max'  # 'bicubic', 'sr', 'max', 'weighted'
-  bicubic_weight: 0.7  # 仅在 weighted 模式使用
+  # 🔥 语义引导损失（略微提升）
+  guidance_loss_weight: 0.08  # 从0.05提升到0.08
+  contrast_weight: 1.0
+  regression_weight: 0.3
+  diff_gt_mode: 'max'
+  bicubic_weight: 0.7
 
-  # 基础损失
+  # 🔥🔥🔥 关键修改：平衡感知质量和像素保真度
   pixel_opt:
     type: L1Loss
-    loss_weight: 1.0
+    loss_weight: 1.0  # 🔥 从1.0适度降低到0.6（保持结构稳定性）
     reduction: mean
 
   perceptual_opt:
-    lpips_weight: 0.5
+    lpips_weight: 1.2  # 🔥 从0.5提升到1.2（增强感知质量但不过度）
   
   # 日志和保存
   logger:
@@ -207,9 +205,8 @@ train:
     wandb:
       project: ~
       resume_id: ~
-      
-      
-# 退化配置（Real-ESRGAN风格）
+
+# 退化配置（与原版相同）
 degradation:
   scale: 4
   resize_prob: [0.2, 0.7, 0.1]
@@ -236,26 +233,29 @@ degradation:
 
 high_order_degradation: true
 
-# 路径配置
+# 🔥🔥🔥 路径配置 - 全新的实验目录，不会覆盖现有实验
 path:
+  # 从原实验的预训练模型加载（不影响原实验）
   pretrain_network_g: experiments/pretrained_models/upsr.pth
   strict_load_g: true
-  param_key_g: params_ema  # 使用EMA参数
-  resume_state: ~  # 不恢复训练状态，从头开始训练mapper
+  param_key_g: params_ema
   
-  # 新的实验目录
-  experiments_root: experiments/AURA_semantic_guided
-  models: experiments/AURA_semantic_guided/models
-  training_states: experiments/AURA_semantic_guided/training_states
-  log: experiments/AURA_semantic_guided
-  visualization: experiments/AURA_semantic_guided/visualization
+  # 🔥 不使用resume（从头开始新实验）
+  resume_state: ~
+  
+  # 🔥🔥🔥 新的实验目录（完全独立）
+  experiments_root: experiments/AURA_semantic_guided_perceptual
+  models: experiments/AURA_semantic_guided_perceptual/models
+  training_states: experiments/AURA_semantic_guided_perceptual/training_states
+  log: experiments/AURA_semantic_guided_perceptual
+  visualization: experiments/AURA_semantic_guided_perceptual/visualization
 
-# 验证配置
+# 验证配置 - 优先关注感知指标
 val:
-  val_freq: !!float 5e3
+  val_freq: !!float 3e3  # 🔥 更频繁的验证（3k vs 5k）
   save_img: true
-  save_diff_heatmap: false  # 不保存 Diff 热力图（加快验证速度）
-  save_uncertainty_heatmap: false  # 不保存 Uncertainty 热力图
+  save_diff_heatmap: false
+  save_uncertainty_heatmap: false
   
   desired_min_size: 64
   chop_size: 512
@@ -265,6 +265,7 @@ val:
   pbar: true
   
   metrics:
+    # 🔥 感知指标优先（排在前面）
     lpips:
       fr: true
       better: lower
@@ -281,7 +282,7 @@ val:
       fr: false
       better: lower
     
-    # 传统指标作为参考
+    # 传统指标作为参考（允许略微下降）
     psnr:
       fr: true
       better: higher
@@ -302,4 +303,4 @@ logger:
 # 分布式训练
 dist_params:
   backend: nccl
-  port: 29500
+  port: 29501  # 🔥 修改端口，避免与现有训练冲突
