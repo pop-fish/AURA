@@ -1,0 +1,306 @@
+# 🔥 带语义引导的AURA训练配置 - 感知质量优先版本
+# 使用预训练CLIP编码器提取语义特征，优化感知质量（LPIPS/CLIP-IQA）而非PSNR/SSIM
+
+name: autodl_AURA_semantic_guided_perceptual  # 🔥 新的实验名称，不会覆盖原实验
+model_target: basicsr.models.upsr_real_model.UPSRRealModel
+scale: 4
+num_gpu: 2
+manual_seed: 0
+queue_size: 168
+
+# 数据集配置（与原版相同）
+datasets:
+  train:
+    name: ImageNet
+    type: RealESRGANDataset
+    dataroot_gt: /root/autodl-tmp/dataset/autodl_pub
+    meta_info_file: basicsr/data/meta_info/meta_info_ImageNet_GT_correct.txt
+    filename_tmpl: '{}'
+    io_backend:
+      type: disk
+    
+    mean: 0.5
+    std: 0.5
+
+    blur_kernel_size: 21
+    kernel_list: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
+    kernel_prob: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
+    sinc_prob: 0.1
+    blur_sigma: [0.2, 3]
+    betag_range: [0.5, 4]
+    betap_range: [1, 2]
+
+    blur_kernel_size2: 15
+    kernel_list2: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
+    kernel_prob2: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
+    sinc_prob2: 0.1
+    blur_sigma2: [0.2, 1.5]
+    betag_range2: [0.5, 4]
+    betap_range2: [1, 2]
+
+    final_sinc_prob: 0.8
+
+    gt_size: 256
+    rescale_gt: false
+    crop_pad_size: 256
+    use_hflip: true
+    use_rot: true
+
+    num_worker_per_gpu: 8
+    batch_size_per_gpu: 28
+    micro_batchsize: 28
+    dataset_enlarge_ratio: 1
+    prefetch_mode: cuda
+    pin_memory: true
+    persistent_workers: true
+
+  val_1:
+    name: imagenet256
+    type: PairedImageDataset
+    dataroot_gt: /root/autodl-tmp/dataset/z_convert_1/gt 
+    dataroot_lq: /root/autodl-tmp/dataset/z_convert_1/lq
+    io_backend:
+      type: disk
+    batch_size: 32
+
+# 网络配置（与原版相同）
+network_g:
+  target: basicsr.archs.swin_unet_arch.UNetModelSwin
+  params:
+    image_size: 64
+    in_channels: 48
+    model_channels: 160
+    out_channels: 3
+    attention_resolutions: [64,32,16,8]
+    dropout: 0
+    channel_mult: [1, 2, 2, 4]
+    num_res_blocks: [2, 2, 2, 2]
+    conv_resample: true
+    dims: 2
+    use_fp16: false
+    num_head_channels: 32
+    use_scale_shift_norm: true
+    resblock_updown: false
+    swin_depth: 2
+    swin_embed_dim: 192
+    window_size: 8
+    mlp_ratio: 4
+    cond_lq: true
+    lq_size: 64
+    num_feat: 128
+
+diffusion:
+  un: 0.1
+  min_noise: 0.2
+  target: models.script_util.create_gaussian_diffusion
+  params:
+    sf: 4
+    schedule_name: exponential
+    schedule_kwargs:
+      power: 0.2
+    etas_end: 0.99
+    steps: 5
+    min_noise_level: 0.2
+    kappa: 2.5
+    weighted_mse: false
+    predict_type: xstart
+    timestep_respacing: ~
+    scale_factor: 1.0
+    normalize_input: true
+    latent_flag: false
+
+# 辅助MSE网络（冻结）
+network_mse:
+  target: basicsr.archs.atd_real_arch.ATD
+  ckpt: 
+    path: experiments/pretrained_models/atd_real.pth
+    strict_load_mse: true
+    param_key_mse: params_ema
+  params:
+    upscale: 4
+    in_chans: 3
+    img_size: 64
+    embed_dim: 96
+    depths: [6, 6, 6, 6]
+    num_heads: [4, 4, 4, 4]
+    window_size: 16
+    category_size: 128
+    num_tokens: 64
+    reducted_dim: 8
+    convffn_kernel_size: 7
+    img_range: 1.
+    mlp_ratio: 1
+    upsampler: 'pixelshuffledirect'
+    resi_connection: '1conv'
+    use_checkpoint: false
+
+# 🔥 可学习的不确定度映射配置
+uncertainty_mapping:
+  use_learnable: true
+  type: content_aware
+  
+  # 🌟 语义编码器配置
+  use_pretrained_semantic: true
+  semantic_model: clip
+  
+  hidden_channels: 64
+  num_heads: 4
+  window_size: 8
+  
+  # 训练策略
+  staged_training: false
+  freeze_main_network: true  # 🔥 冻结主网络
+  freeze_others_initially: false
+
+  mapper_lr_scale: 1.0
+  main_lr_scale: 1.0
+  
+  # 🔥 如果想加载当前训练的mapper权重（可选）
+  # ckpt_path: experiments/AURA_semantic_guided/models/uncertainty_mapper_15000.pth
+  ckpt_path: ~
+  strict_load: false
+
+# 🔥 训练配置 - 感知质量优先
+train:
+  use_fp16: true
+  ema_decay: 0.999
+  
+  # 🔥 新的训练策略：从头开始，优化感知质量
+  total_iter: 80000  # 80k iterations（相对较少，因为是fine-tuning方向）
+  warmup_iter: 500
+  
+  # 🔥 降低学习率（fine-tuning）
+  optim_g:
+    type: AdamW
+    lr: !!float 1e-4  # 从2e-4降到1e-4
+    weight_decay: 0.001
+    betas: [0.9, 0.999]
+  
+  scheduler:
+    type: TrueCosineAnnealingLR
+    T_max: 80000
+    eta_min: !!float 1e-6
+  
+  # 🔥 语义引导损失（略微提升）
+  guidance_loss_weight: 0.08  # 从0.05提升到0.08
+  contrast_weight: 1.0
+  regression_weight: 0.3
+  diff_gt_mode: 'max'
+  bicubic_weight: 0.7
+
+  # 🔥🔥🔥 关键修改：平衡感知质量和像素保真度
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0  # 🔥 从1.0适度降低到0.6（保持结构稳定性）
+    reduction: mean
+
+  perceptual_opt:
+    lpips_weight: 1.2  # 🔥 从0.5提升到1.2（增强感知质量但不过度）
+  
+  # 日志和保存
+  logger:
+    print_freq: 100
+    save_checkpoint_freq: !!float 5e3
+    use_tb_logger: true
+    wandb:
+      project: ~
+      resume_id: ~
+
+# 退化配置（与原版相同）
+degradation:
+  scale: 4
+  resize_prob: [0.2, 0.7, 0.1]
+  resize_range: [0.15, 1.5]
+  gaussian_noise_prob: 0.5
+  noise_range: [1, 30]
+  poisson_scale_range: [0.05, 3.0]
+  gray_noise_prob: 0.4
+  jpeg_range: [30, 95]
+
+  second_order_prob: 0.5
+  second_blur_prob: 0.8
+  resize_prob2: [0.3, 0.4, 0.3]
+  resize_range2: [0.3, 1.2]
+  gaussian_noise_prob2: 0.5
+  noise_range2: [1, 25]
+  poisson_scale_range2: [0.05, 2.5]
+  gray_noise_prob2: 0.4
+  jpeg_range2: [30, 95]
+
+  gt_size: 256
+  resize_back: false
+  use_sharp: false
+
+high_order_degradation: true
+
+# 🔥🔥🔥 路径配置 - 全新的实验目录，不会覆盖现有实验
+path:
+  # 从原实验的预训练模型加载（不影响原实验）
+  pretrain_network_g: experiments/pretrained_models/upsr.pth
+  strict_load_g: true
+  param_key_g: params_ema
+  
+  # 🔥 不使用resume（从头开始新实验）
+  resume_state: ~
+  
+  # 🔥🔥🔥 新的实验目录（完全独立）
+  experiments_root: experiments/[autodl]AURA_semantic_guided_perceptual
+  models: experiments/[autodl]AURA_semantic_guided_perceptual/models
+  training_states: experiments/[autodl]AURA_semantic_guided_perceptual/training_states
+  log: experiments/[autodl]AURA_semantic_guided_perceptual
+  visualization: experiments/[autodl]AURA_semantic_guided_perceptual/visualization
+  save_main_network: false  # 第一阶段冻结主网时不落盘net_g/ema，节省存储
+# 验证配置 - 优先关注感知指标
+val:
+  val_freq: !!float 5e3  # 🔥 更频繁的验证（3k vs 5k）
+  save_img: false 
+  save_diff_heatmap: false
+  save_uncertainty_heatmap: false
+  
+  desired_min_size: 64
+  chop_size: 512
+  chop_stride: 448
+  chop_bs: 1
+  noise_repeat: false
+  pbar: true
+  
+  metrics:
+    # 🔥 感知指标优先（排在前面）
+    lpips:
+      fr: true
+      better: lower
+    
+    clipiqa:
+      fr: false
+      better: higher
+    
+    musiq:
+      fr: false  
+      better: higher
+    
+    niqe:
+      fr: false
+      better: lower
+    
+    # 传统指标作为参考（允许略微下降）
+    psnr:
+      fr: true
+      better: higher
+    
+    ssim:
+      fr: true
+      better: higher
+
+# 日志配置
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# 分布式训练
+dist_params:
+  backend: nccl
+  port: 29501  # 🔥 修改端口，避免与现有训练冲突
