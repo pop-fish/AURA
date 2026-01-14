@@ -431,7 +431,7 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
                 # 🔥 优先尝试本地路径
                 import os
                 local_clip_paths = [
-                    "/root/.cache/huggingface/hub/models--openai--clip-vit-base-patch32",
+                    "/root/autodl-tmp/.cache/huggingface/hub/models--openai--clip-vit-base-patch32",
                     os.path.expanduser("~/.cache/huggingface/hub/models--openai--clip-vit-base-patch32"),
                     os.path.expanduser("~/.cache/huggingface/hub/clip-vit-base-patch32"),
                 ]
@@ -467,13 +467,11 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
                         self.semantic_encoder = CLIPVisionModel.from_pretrained(
                             "openai/clip-vit-base-patch32",
                             cache_dir=os.path.expanduser("~/.cache/huggingface/hub"),
-                            resume_download=True,
-                            timeout=60
+                            resume_download=True
                         )
                         self.clip_processor = CLIPImageProcessor.from_pretrained(
                             "openai/clip-vit-base-patch32",
-                            cache_dir=os.path.expanduser("~/.cache/huggingface/hub"),
-                            timeout=60
+                            cache_dir=os.path.expanduser("~/.cache/huggingface/hub")
                         )
                         self.logger.info("   ✅ CLIP downloaded successfully")
                         clip_loaded = True

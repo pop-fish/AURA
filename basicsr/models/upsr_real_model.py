@@ -1080,8 +1080,13 @@ class UPSRRealModel(SRModel):
     
     def save(self, epoch, current_iter):
         """保存模型，包括主网络和映射层"""
-        # 保存主网络和EMA（继承自基类）
-        super().save(epoch, current_iter)
+        # 如显式关闭保存主网络，则仅记录训练状态（减小存储占用）
+        save_main = self.opt.get('path', {}).get('save_main_network', True)
+        if save_main:
+            super().save(epoch, current_iter)
+        else:
+            # 仍然保存优化器/调度器状态，便于继续训练
+            self.save_training_state(epoch, current_iter)
         
         # 如果使用可学习映射，额外保存映射层
         if self.use_learnable_mapping and self.uncertainty_mapper is not None:
