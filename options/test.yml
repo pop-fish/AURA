@@ -8,35 +8,36 @@ manual_seed: 0
 # dataset and data loader settings
 # dataset and data loader settings
 datasets:
-  # val_1:
-  #   name: imagenet256
-  #   type: PairedImageDataset
-  #   dataroot_gt: /dataset/ImageNet/imagenet256/gt
-  #   dataroot_lq: /dataset/ImageNet/imagenet256/lq
-  #   io_backend:
-  #     type: disk
-  #   batch_size: 32
-  
-  # val_1:
-  #   name: RealSRV3
-  #   type: PairedImageDataset
-  #   dataroot_gt: /dataset/real2019/Test_HR_100
-  #   dataroot_lq: /dataset/real2019/Test_LR_100_bicubic
-  #   io_backend:
-  #     type: disk
-
-  # val_3:
-  #   name: RealSet65
-  #   type: SingleImageDataset
-  #   dataroot_lq: /dataset/RealSet/RealSet65
-  #   io_backend:
-  #     type: disk
-
   val_1:
+    name: imagenet256
+    type: PairedImageDataset
+    dataroot_gt: /root/autodl-tmp/dataset/z_convert_1/gt
+    dataroot_lq: /root/autodl-tmp/dataset/z_convert_1/lq
+    io_backend:
+      type: disk
+    batch_size: 32
+  
+  val_2:
+    name: RealSRV3
+    type: PairedImageDataset
+    dataroot_gt: /root/autodl-tmp/dataset/z_convert_2/val/1
+    dataroot_lq: /root/autodl-tmp/dataset/z_convert_2/val/2
+    io_backend:
+      type: disk
+
+  val_3:
     name: DIV2K
     type: PairedImageDataset
-    dataroot_gt: /dataset/DIV/DIV/DIV2K/valid_HR/DIV2K_valid_HR
-    dataroot_lq: /dataset/DIV/DIV/DIV2K/valid_HR_x4
+    dataroot_gt: /root/autodl-tmp/dataset/z_convert_3/val/1
+    dataroot_lq: /root/autodl-tmp/dataset/z_convert_3/val/2
+    io_backend:
+      type: disk
+
+  val_4:
+    name: DIV2K
+    type: PairedImageDataset
+    dataroot_gt: /root/autodl-tmp/dataset/z_convert_4/1/val
+    dataroot_lq: /root/autodl-tmp/dataset/z_convert_4/2/val
     io_backend:
       type: disk
 
@@ -125,20 +126,20 @@ uncertainty_mapping:
   hidden_channels: 64      # 特征提取隐藏层通道数（默认64）
   num_heads: 4             # Cross-Attention头数（默认4）
   window_size: 8 
-  ckpt_path: /root/project/AURA/experiments/contrast_regression_guidance_v2/models/uncertainty_mapper_5000.pth
+  ckpt_path: /root/autodl-tmp/test/AURA/experiments/perce/uncertainty_mapper_10000.pth
 
 # path - 使用 30k iter 的最佳模型
 path:
   # pretrain_network_g: experiments/stage1_learnable_mapper_only_5k_spatial/models/net_g_5000.pth
   # pretrain_network_g: experiments/stage1_content_aware_10k_best9k/models/net_g_9000.pth
-  pretrain_network_g: /root/project/AURA/experiments/contrast_regression_guidance_v2/models/net_g_5000.pth
+  pretrain_network_g: /root/autodl-tmp/test/AURA/experiments/perce/net_g_10000.pth
   # pretrain_network_g: experiments/stage1_100k+15kwarm_up_spatial_13000best/models/net_g_13000.pth
   strict_load_g: true
 
 # validation settings
 val:
   save_img: true
-  save_diff_heatmap: true          # 启用Diff热力图
+  save_diff_heatmap: false          # 启用Diff热力图
   save_uncertainty_heatmap: false    # 启用Uncertainty热力图
   suffix: ~
   pbar: true
