@@ -256,7 +256,11 @@ val:
   save_img: true
   save_diff_heatmap: false
   save_uncertainty_heatmap: false
-  
+    # 🔥 新增：中间结果保存控制
+  save_bicubic: false     # 保存 bicubic 插值结果
+  save_noise1: false      # 保存 noise1 (uncertainty map)
+  save_noise2: false      # 保存 noise2 (noisy start)
+  save_sr_mse: false      # 保存 sr_mse (MSE网络输出)
   desired_min_size: 64
   chop_size: 512
   chop_stride: 448

@@ -1,7 +1,7 @@
 # 🔥 带语义引导的AURA训练配置 - 感知质量优先版本
 # 使用预训练CLIP编码器提取语义特征，优化感知质量（LPIPS/CLIP-IQA）而非PSNR/SSIM
 
-name: autodl_AURA_semantic_guided_joint_finetune  # 🔥 阶段二：联合微调
+name: autodl_AURA_semantic_guided_perceptual_saveall # 不使用联合微调
 model_target: basicsr.models.upsr_real_model.UPSRRealModel
 scale: 4
 num_gpu: 2
@@ -148,16 +148,16 @@ uncertainty_mapping:
   window_size: 8
   
   # 训练策略
-  staged_training: false     # 联合训练模式
+  staged_training: false
+  freeze_main_network: true  # 🔥 冻结主网络
   freeze_others_initially: false
 
-  # 🌟 学习率倍率 (Mapper LR = base_lr * lr_scale)
-  # UNet 使用 base_lr (1e-5), Mapper 使用 5e-5
-  lr_scale: 5.0
+  mapper_lr_scale: 1.0
+  main_lr_scale: 1.0
   
   # 🔥 请在此处填入阶段一训练的最佳 Mapper 权重路径!
   # 例如: experiments/autodl_AURA_semantic_guided_perceptual/models/uncertainty_mapper_50000.pth
-  ckpt_path: experiments/autodl_AURA_semantic_guided_perceptual/models/uncertainty_mapper_50000.pth 
+  ckpt_path: ~
   strict_load: false
 
 # 🔥 训练配置 - 感知质量优先
@@ -172,7 +172,7 @@ train:
   # 🔥 降低学习率（fine-tuning）
   optim_g:
     type: AdamW
-    lr: !!float 1e-5  # 🔥 降至 1e-5 以保护 UNet 结构 (Mapper 将使用 5e-5)
+    lr: !!float 1e-4 
     weight_decay: 0.001
     betas: [0.9, 0.999]
   
@@ -244,12 +244,12 @@ path:
   resume_state: ~
   
   # 🔥🔥🔥 新的实验目录（完全独立）
-  experiments_root: experiments/autodl_AURA_semantic_guided_joint_finetune
-  models: experiments/autodl_AURA_semantic_guided_joint_finetune/models
-  training_states: experiments/autodl_AURA_semantic_guided_joint_finetune/training_states
-  log: experiments/autodl_AURA_semantic_guided_joint_finetune
-  visualization: experiments/autodl_AURA_semantic_guided_joint_finetune/visualization
-  save_main_network: true   # 🔥 联合训练必须保存主网络
+  experiments_root: experiments/autodl_AURA_semantic_guided_saveall
+  models: experiments/autodl_AURA_semantic_guided_saveall/models
+  training_states: experiments/autodl_AURA_semantic_guided_saveall/training_states
+  log: experiments/autodl_AURA_semantic_guided_saveall
+  visualization: experiments/autodl_AURA_semantic_guided_saveall/visualization
+  save_main_network: true   # 必须保存主网络
 # 验证配置 - 优先关注感知指标
 val:
   val_freq: !!float 5e3  # 🔥 更频繁的验证（3k vs 5k）
