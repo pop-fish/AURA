@@ -844,7 +844,8 @@ class UPSRRealModel(SRModel):
                 if self.sr_mse_pred is not None and self.bicubic_upscale is not None:
                     diff_tensors = (self.sr_mse_pred - self.bicubic_upscale) / 2
             
-            if save_img and hasattr(self, 'uncertainty_map') and self.uncertainty_map is not None:
+            # 🔥 修改：增加 save_noise1 参数控制 (Upsr代码中 noise1 文件夹对应 uncertainty_map)
+            if save_img and self.opt['val'].get('save_noise1', False) and hasattr(self, 'uncertainty_map') and self.uncertainty_map is not None:
                 # 将不确定度图转换为可视化图像（归一化到0-255）
                 uncertainty_imgs = []
                 for ii in range(self.uncertainty_map.shape[0]):
@@ -855,8 +856,9 @@ class UPSRRealModel(SRModel):
                     un_img = un_map.repeat(3, 1, 1)  # [3, H, W]
                     un_img_np = tensor2img(un_img.unsqueeze(0).cpu())  # 转换为numpy数组
                     uncertainty_imgs.append(un_img_np)
-                
-            if save_img and hasattr(self, 'noisy_start') and self.noisy_start is not None:
+            
+            # 🔥 修改：增加 save_noise2 参数控制 (Upsr代码中 noise2 文件夹对应 noisy_start)
+            if save_img and self.opt['val'].get('save_noise2', False) and hasattr(self, 'noisy_start') and self.noisy_start is not None:
                 # 将加噪起点图转换为可视化图像
                 noisy_start_imgs = []
                 noisy_vis = self.noisy_start * 0.5 + 0.5  # 从[-1,1]转到[0,1]
@@ -864,7 +866,8 @@ class UPSRRealModel(SRModel):
                     noisy_img_np = tensor2img(noisy_vis[ii:ii+1].cpu())
                     noisy_start_imgs.append(noisy_img_np)
             
-            if save_img and hasattr(self, 'sr_mse_pred') and self.sr_mse_pred is not None:
+            # 🔥 修改：增加 save_sr_mse 参数控制
+            if save_img and self.opt['val'].get('save_sr_mse', False) and hasattr(self, 'sr_mse_pred') and self.sr_mse_pred is not None:
                 # 保存辅助SR网络预测结果
                 sr_mse_imgs = []
                 sr_mse_vis = self.sr_mse_pred * 0.5 + 0.5  # 从[-1,1]转到[0,1]
@@ -872,7 +875,8 @@ class UPSRRealModel(SRModel):
                     sr_mse_img_np = tensor2img(sr_mse_vis[ii:ii+1].cpu())
                     sr_mse_imgs.append(sr_mse_img_np)
             
-            if save_img and hasattr(self, 'bicubic_upscale') and self.bicubic_upscale is not None:
+            # 🔥 修改：增加 save_bicubic 参数控制
+            if save_img and self.opt['val'].get('save_bicubic', False) and hasattr(self, 'bicubic_upscale') and self.bicubic_upscale is not None:
                 # 保存双三次插值放大结果
                 bicubic_imgs = []
                 bicubic_vis = self.bicubic_upscale * 0.5 + 0.5  # 从[-1,1]转到[0,1]
