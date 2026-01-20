@@ -1,7 +1,7 @@
 # 🔥 带语义引导的AURA训练配置 - 感知质量优先版本
 # 使用预训练CLIP编码器提取语义特征，优化感知质量（LPIPS/CLIP-IQA）而非PSNR/SSIM
 
-name: autodl_AURA_semantic_guided_perceptual_saveall # 不使用联合微调
+name: autodl_AURA_semantic_guided_perceptual_improve # 不使用联合微调
 model_target: basicsr.models.upsr_real_model.UPSRRealModel
 scale: 4
 num_gpu: 2
@@ -147,10 +147,10 @@ uncertainty_mapping:
   num_heads: 4
   window_size: 8
   
-  # 训练策略
-  staged_training: false
+  # 训练策略 都是true的时候冻结主网络
+  staged_training: true
   freeze_main_network: true  # 🔥 冻结主网络
-  freeze_others_initially: false
+  freeze_others_initially: true 
 
   mapper_lr_scale: 1.0
   main_lr_scale: 1.0
@@ -244,12 +244,12 @@ path:
   resume_state: ~
   
   # 🔥🔥🔥 新的实验目录（完全独立）
-  experiments_root: experiments/autodl_AURA_semantic_guided_saveall
-  models: experiments/autodl_AURA_semantic_guided_saveall/models
-  training_states: experiments/autodl_AURA_semantic_guided_saveall/training_states
-  log: experiments/autodl_AURA_semantic_guided_saveall
-  visualization: experiments/autodl_AURA_semantic_guided_saveall/visualization
-  save_main_network: true   # 必须保存主网络
+  experiments_root: experiments/autodl_AURA_semantic_guided_perceptual_improve
+  models: experiments/autodl_AURA_semantic_guided_perceptual_improve/models
+  training_states: experiments/autodl_AURA_semantic_guided_perceptual_improve/training_states
+  log: experiments/autodl_AURA_semantic_guided_perceptual_improve
+  visualization: experiments/autodl_AURA_semantic_guided_perceptual_improve/visualization
+  save_main_network: false   # 必须保存主网络
 # 验证配置 - 优先关注感知指标
 val:
   val_freq: !!float 5e3  # 🔥 更频繁的验证（3k vs 5k）
