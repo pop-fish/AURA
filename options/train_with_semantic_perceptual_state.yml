@@ -157,8 +157,8 @@ uncertainty_mapping:
   
   # 🔥 请在此处填入阶段一训练的最佳 Mapper 权重路径!
   # 例如: experiments/autodl_AURA_semantic_guided_perceptual/models/uncertainty_mapper_50000.pth
-  ckpt_path: ~
-  strict_load: false
+  ckpt_path: experiments/autodl_AURA_semantic_guided_perceptual_improve/models/uncertainty_mapper_40000.pth
+  strict_load: true
 
 # 🔥 训练配置 - 感知质量优先
 train:
@@ -236,12 +236,12 @@ high_order_degradation: true
 # 🔥🔥🔥 路径配置 - 全新的实验目录，不会覆盖现有实验
 path:
   # 从原实验的预训练模型加载（不影响原实验）
-  pretrain_network_g: experiments/pretrained_models/upsr.pth
+  pretrain_network_g: experiments/autodl_AURA_semantic_guided_perceptual_improve/models/net_g_40000.pth
   strict_load_g: true
   param_key_g: params_ema
   
   # 🔥 不使用resume（从头开始新实验）
-  resume_state: ~
+  resume_state: /root/autodl-tmp/test/AURA/experiments/autodl_AURA_semantic_guided_perceptual_improve_saveall/training_states/40000.state
   
   # 🔥🔥🔥 新的实验目录（完全独立）
   experiments_root: experiments/autodl_AURA_semantic_guided_perceptual_improve
@@ -252,7 +252,7 @@ path:
   save_main_network: true   # 必须保存主网络
 # 验证配置 - 优先关注感知指标
 val:
-  val_freq: !!float 5e3  # 🔥 更频繁的验证（3k vs 5k）
+  val_freq: 1  # 🔥 更频繁的验证（3k vs 5k）
   save_img: false 
   save_diff_heatmap: false
   save_uncertainty_heatmap: false
