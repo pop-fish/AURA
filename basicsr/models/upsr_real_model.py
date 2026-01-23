@@ -388,11 +388,12 @@ class UPSRRealModel(SRModel):
                     if self.use_learnable_mapping and self.uncertainty_mapper is not None:
                         # 检查是否为内容感知映射
                         if isinstance(self.uncertainty_mapper, ContentAwareSpatialUncertaintyMapping):
-                            # ✅ 内容感知映射：需要LQ图像
-                            # 将LQ上采样到HR尺寸并归一化到[0,1]
-                            micro_lq_hr = F.interpolate(micro_lq, scale_factor=self.sf, mode='bicubic', align_corners=False)
-                            micro_lq_hr = micro_lq_hr * 0.5 + 0.5  # 从[-1,1]转到[0,1]
-                            micro_uncertainty = self.uncertainty_mapper(diff, micro_lq_hr)
+                            # ✅ 内容感知映射：改为使用 micro_sr_mse 作为语义输入
+                            # micro_sr_mse 已经在 [-1, 1] 范围，且是 HR 尺寸
+                            # 1. Detach: 切断梯度，仅作条件
+                            # 2. Rescale: [-1, 1] -> [0, 1]
+                            micro_sem_input = micro_sr_mse.detach() * 0.5 + 0.5
+                            micro_uncertainty = self.uncertainty_mapper(diff, micro_sem_input)
                         else:
                             # 普通可学习映射：只需要diff
                             micro_uncertainty = self.uncertainty_mapper(diff)
@@ -594,10 +595,9 @@ class UPSRRealModel(SRModel):
                 with torch.no_grad():
                     # 检查是否为内容感知映射
                     if isinstance(self.uncertainty_mapper, ContentAwareSpatialUncertaintyMapping):
-                        # ✅ 内容感知映射：需要LQ图像
-                        y0_hr = F.interpolate(y0, scale_factor=self.sf, mode='bicubic', align_corners=False)
-                        y0_hr = y0_hr * 0.5 + 0.5  # 从[-1,1]转到[0,1]
-                        un = self.uncertainty_mapper(diff, y0_hr)
+                        # ✅ 内容感知映射：改为使用 net_mse 预测结果作为语义输入
+                        y_sem_input = y_hat.detach() * 0.5 + 0.5  # y_hat 在[-1,1]且已是HR尺寸
+                        un = self.uncertainty_mapper(diff, y_sem_input)
                     else:
                         # 普通可学习映射：只需要diff
                         un = self.uncertainty_mapper(diff)
