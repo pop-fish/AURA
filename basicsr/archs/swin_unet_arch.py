@@ -564,7 +564,7 @@ class UNetModel(nn.Module):
         if self.num_classes is not None:
             assert y.shape == (x.shape[0],)
             emb = emb + self.label_emb(y)
-
+        # 将lq拼接到输入通道
         if lq is not None:
             assert self.cond_lq
             if lq.shape[2:] != x.shape[2:]:

@@ -1,5 +1,5 @@
 # general settings
-name: test_stage2_30k
+name: test_stage2_30k_gpu2
 model_target: basicsr.models.upsr_real_model.UPSRRealModel
 scale: 4
 num_gpu: 1
@@ -17,29 +17,29 @@ datasets:
       type: disk
     batch_size: 32
   
-  # val_2:
-  #   name: RealSRV3
-  #   type: PairedImageDataset
-  #   dataroot_gt: /root/autodl-tmp/dataset/z_convert_2/val/1
-  #   dataroot_lq: /root/autodl-tmp/dataset/z_convert_2/val/2
-  #   io_backend:
-  #     type: disk
+  val_2:
+    name: RealSRV3
+    type: PairedImageDataset
+    dataroot_gt: /root/autodl-tmp/dataset/z_convert_2/val/1
+    dataroot_lq: /root/autodl-tmp/dataset/z_convert_2/val/2
+    io_backend:
+      type: disk
 
-  # val_3:
-  #   name: DIV2K
-  #   type: PairedImageDataset
-  #   dataroot_gt: /root/autodl-tmp/dataset/z_convert_3/val/1
-  #   dataroot_lq: /root/autodl-tmp/dataset/z_convert_3/val/2
-  #   io_backend:
-  #     type: disk
+  val_3:
+    name: DIV2K
+    type: PairedImageDataset
+    dataroot_gt: /root/autodl-tmp/dataset/z_convert_3/val/1
+    dataroot_lq: /root/autodl-tmp/dataset/z_convert_3/val/2
+    io_backend:
+      type: disk
 
-  # val_4:
-  #   name: LSDIR
-  #   type: PairedImageDataset
-  #   dataroot_gt: /root/autodl-tmp/dataset/z_convert_4/1/val
-  #   dataroot_lq: /root/autodl-tmp/dataset/z_convert_4/2/val
-  #   io_backend:
-  #     type: disk
+  val_4:
+    name: DIV2K
+    type: PairedImageDataset
+    dataroot_gt: /root/autodl-tmp/dataset/z_convert_4/1/val
+    dataroot_lq: /root/autodl-tmp/dataset/z_convert_4/2/val
+    io_backend:
+      type: disk
 
 # network structures
 network_g:
@@ -129,13 +129,13 @@ uncertainty_mapping:
   hidden_channels: 64      # 特征提取隐藏层通道数（默认64）
   num_heads: 4             # Cross-Attention头数（默认4）
   window_size: 8 
-  ckpt_path: /root/autodl-tmp/test/AURA/experiments/autodl_AURA_semantic_guided_perceptual_saveall/models/uncertainty_mapper_30000.pth
+  ckpt_path: /root/autodl-tmp/test/AURA/experiments/autodl_AURA_semantic_guided_perceptual_saveall/models/uncertainty_mapper_60000.pth
 
 # path - 使用 30k iter 的最佳模型
 path:
   # pretrain_network_g: experiments/stage1_learnable_mapper_only_5k_spatial/models/net_g_5000.pth
   # pretrain_network_g: experiments/stage1_content_aware_10k_best9k/models/net_g_9000.pth
-  pretrain_network_g: /root/autodl-tmp/test/AURA/experiments/autodl_AURA_semantic_guided_perceptual_saveall/models/net_g_30000.pth
+  pretrain_network_g: /root/autodl-tmp/test/AURA/experiments/autodl_AURA_semantic_guided_perceptual_saveall/models/net_g_60000.pth
   # pretrain_network_g: experiments/stage1_100k+15kwarm_up_spatial_13000best/models/net_g_13000.pth
   strict_load_g: true
 
@@ -179,9 +179,6 @@ val:
     niqe:
       fr: false
       better: lower
-
-    maniqa:
-      fr: false
 
 # logging settings
 logger:

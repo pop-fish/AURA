@@ -408,12 +408,12 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
         semantic_model (str): 语义编码器类型 ('clip' or 'deit')
     """
     
-    def __init__(self, un_max=1.0, min_noise=0.2, channels=3, hidden_channels=64, 
+    def __init__(self, un_max=1.0, min_noise=0.01, channels=3, hidden_channels=64, 
                  num_heads=4, window_size=8, use_pretrained_semantic=True, 
                  semantic_model='clip'):
         super().__init__()
         self.un_max = un_max
-        self.min_noise = 0.2  # 🔥 提升底噪到0.2，避免过度平滑
+        self.min_noise = min_noise  # 🔥 降低底噪至 0.01，允许保留细节
         self.use_pretrained_semantic = use_pretrained_semantic
         self.semantic_model = semantic_model
         
@@ -431,7 +431,7 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
                 # 🔥 优先尝试本地路径
                 import os
                 local_clip_paths = [
-                    "/root/.cache/huggingface/hub/models--openai--clip-vit-base-patch32",
+                    "/root/autodl-tmp/.cache/huggingface/hub/models--openai--clip-vit-base-patch32",
                     os.path.expanduser("~/.cache/huggingface/hub/models--openai--clip-vit-base-patch32"),
                     os.path.expanduser("~/.cache/huggingface/hub/clip-vit-base-patch32"),
                 ]
@@ -467,13 +467,11 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
                         self.semantic_encoder = CLIPVisionModel.from_pretrained(
                             "openai/clip-vit-base-patch32",
                             cache_dir=os.path.expanduser("~/.cache/huggingface/hub"),
-                            resume_download=True,
-                            timeout=60
+                            resume_download=True
                         )
                         self.clip_processor = CLIPImageProcessor.from_pretrained(
                             "openai/clip-vit-base-patch32",
-                            cache_dir=os.path.expanduser("~/.cache/huggingface/hub"),
-                            timeout=60
+                            cache_dir=os.path.expanduser("~/.cache/huggingface/hub")
                         )
                         self.logger.info("   ✅ CLIP downloaded successfully")
                         clip_loaded = True
@@ -513,7 +511,7 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
         else:
             semantic_dim = hidden_channels
         
-        # LQ局部特征提取器（用于与语义特征融合）
+        # MSE局部特征提取器（用于与语义特征融合）
         self.lq_encoder = nn.Sequential(
             nn.Conv2d(channels, hidden_channels, 3, padding=1),
             nn.GroupNorm(num_groups=8, num_channels=hidden_channels),
@@ -542,7 +540,7 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
             )
             self.logger.info(f"Semantic projection: {semantic_dim} -> {hidden_channels}")
         
-        # 🔥 改进的Cross-Attention：LQ query语义特征（如果使用预训练模型）
+        # 🔥 改进的Cross-Attention：MSE query语义特征（如果使用预训练模型）
         # 否则使用原来的window-based attention
         if self.use_pretrained_semantic:
             # Token-based Cross-Attention（LQ spatial tokens query semantic tokens）
@@ -578,15 +576,19 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
             nn.Conv2d(hidden_channels // 2, channels, 1),
             nn.Tanh() # 加入tanh激活以限制调整范围到 [-1, 1]
         )
+
+        # 可学习的调整尺度，限制微调幅度初始很小，防止覆盖基准权重
+        self.adj_scale = nn.Parameter(torch.tensor(0.1))
         
         # 初始化
         self._init_weights()
     
     def _init_weights(self):
         """初始化网络权重"""
-        # 输出层初始化为零（残差学习）
-        nn.init.zeros_(self.output_proj[-2].weight)
-        nn.init.zeros_(self.output_proj[-2].bias)
+        # 输出层不再全零初始化，使用小的正态分布打破对称性
+        nn.init.normal_(self.output_proj[-2].weight, mean=0.0, std=0.02)
+        if self.output_proj[-2].bias is not None:
+             nn.init.constant_(self.output_proj[-2].bias, 0.0)
         
         # 其他层使用Kaiming初始化
         for m in self.modules():
@@ -598,6 +600,7 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
     
+    # 改进的固定映射函数
     def fixed_mapping(self, diff):
         """
         原始固定映射函数（改进版：底噪0.2 + x²指数映射）
@@ -626,6 +629,22 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
         # 应用底噪（现在为0.2）
         uncertainty = self.min_noise + (1 - self.min_noise) * normalized_diff
         return uncertainty
+
+    # 使用原始的fixed_mapping函数
+    def fixed_mapping_ori(self, diff):
+        """
+        原始固定映射函数
+        Args:
+            diff (Tensor): 差异图 (micro_sr_mse - micro_lq_bicubic) / 2
+        
+        Returns:
+            Tensor: 不确定权重，范围 [0.2, 1.0]
+        """
+        un_max = self.un_max
+        b_un = self.min_noise
+        micro_uncertainty = torch.abs(diff).clamp_(0., un_max) / un_max
+        micro_uncertainty = b_un + (1 - b_un) * micro_uncertainty
+        return micro_uncertainty
     
     def forward(self, diff, lq):
         """
@@ -653,7 +672,7 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
             self._first_call_logged = True
         
         # 获取基准权重
-        base_weight = self.fixed_mapping(diff)  # [B, C, H, W]
+        base_weight = self.fixed_mapping_ori(diff)  # [B, C, H, W]
         
         # 每500次调用记录一次统计信息
         if self.forward_count % 5000 == 1:
@@ -685,11 +704,13 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
                     lq_input = (lq_resized - mean) / std
                     semantic_feat = self.semantic_encoder.forward_features(lq_input)  # [B, num_patches+1, dim]
             
-            # 投影语义特征到hidden_channels
+            # 投影语义特征到hidden_channels 由768维->64维
             semantic_feat_proj = self.semantic_proj(semantic_feat)  # [B, N_tokens, hidden_channels]
             
             if self.forward_count % 5000 == 1:
                 self.logger.info(f"  Semantic features: {semantic_feat.shape} -> {semantic_feat_proj.shape}")
+                # torch.Size([32, 50, 768]) -> torch.Size([32, 50, 64]
+                self.logger.info(f"  LQ normalized for semantic encoder: {lq_norm.shape}")
         
         # 局部特征提取
         lq_feat = self.lq_encoder(lq_norm)      # [B, D, H, W]
@@ -697,7 +718,7 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
         
         # 🔥 语义引导的Cross-Attention
         if self.use_pretrained_semantic:
-            # 将LQ spatial features转换为tokens
+            # 将LQ spatial features转换为tokens 将 [B, D, H, W] -> [B, H*W, D] (平铺特征)
             lq_tokens = lq_feat.flatten(2).permute(0, 2, 1)  # [B, H*W, D]
             lq_tokens = self.norm_before_cross(lq_tokens)
             
@@ -720,6 +741,7 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
         else:
             lq_feat_semantic = lq_feat
         
+
         # Window-based Cross-Attention: 语义增强的LQ特征调制Diff特征
         # Query来自语义增强的LQ（询问"这个位置的内容需要多大不确定度"）
         # Key, Value来自Diff（提供"SR预测质量信息"）
@@ -731,30 +753,33 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
         # 🔥 [新增] 执行平滑操作，消除方块效应
         modulated_feat = self.post_smooth(modulated_feat)
 
-        # 输出调整量 🔥[注意]降低到0.1，减少对baseweight的影响
-        adjustment = self.output_proj(modulated_feat)*0.1  # [B, C, H, W]
+        # 输出调整量并使用可学习尺度抑制幅度
+        raw_adj = self.output_proj(modulated_feat)  # [-1, 1]
+        adjustment = self.adj_scale * raw_adj       # [B, C, H, W]
         
         if self.forward_count % 5000 == 1:
-            self.logger.info(f"  Adjustment: min={adjustment.min():.4f}, max={adjustment.max():.4f}, mean={adjustment.mean():.4f}, std={adjustment.std():.4f}")
+            self.logger.info(f"  Adjustment (scaled): min={adjustment.min():.4f}, max={adjustment.max():.4f}, mean={adjustment.mean():.4f}, std={adjustment.std():.4f}")
             
             # 检查adjustment符号分布
             pos_ratio = (adjustment > 0).float().mean()
             neg_ratio = (adjustment < 0).float().mean()
             self.logger.info(f"  Adjustment signs: positive={pos_ratio*100:.1f}%, negative={neg_ratio*100:.1f}%")
         
-        # 残差连接
-        final_weight = base_weight + adjustment
+        # 边界感知缩放：根据剩余空间自适应限制增减幅度，避免硬截断
+        allowed_up = 1.0 - base_weight            # 可以上调的最大幅度
+        allowed_dn = base_weight - self.min_noise # 可以下调的最大幅度
 
-        
-        # 约束范围
-        final_weight = final_weight.clamp(min=self.min_noise, max=1.0)
+        adj_pos = F.relu(adjustment) * allowed_up
+        adj_neg = F.relu(-adjustment) * allowed_dn
+
+        final_weight = base_weight + adj_pos - adj_neg
         
         if self.forward_count % 5000 == 1:
             self.logger.info(f"  FinalWeight: min={final_weight.min():.4f}, max={final_weight.max():.4f}, mean={final_weight.mean():.4f}")
             
             # 检查饱和情况
-            saturated_low = (final_weight == self.min_noise).float().mean()
-            saturated_high = (final_weight == 1.0).float().mean()
+            saturated_low = (final_weight <= self.min_noise + 1e-6).float().mean()
+            saturated_high = (final_weight >= 1.0 - 1e-6).float().mean()
             self.logger.info(f"  Saturation: low={saturated_low*100:.2f}%, high={saturated_high*100:.2f}%")
             
             if saturated_low + saturated_high > 0.10:

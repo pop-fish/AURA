@@ -9,7 +9,7 @@ import sys
 import os
 
 # 添加路径
-sys.path.insert(0, '/root/project/AURA')
+sys.path.insert(0, '/root/autodl-tmp/test/AURA')
 
 from basicsr.models.uncertainty_mapping import ContentAwareSpatialUncertaintyMapping
 
