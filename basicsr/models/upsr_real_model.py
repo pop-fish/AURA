@@ -843,6 +843,7 @@ class UPSRRealModel(SRModel):
             else:
                 self.gt = None
 
+    @torch.no_grad()
     def nondist_validation(self, dataloader, current_iter, tb_logger, save_img):
         # 数据集名称
         dataset_name = dataloader.dataset.opt['name']

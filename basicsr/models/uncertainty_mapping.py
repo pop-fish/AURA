@@ -511,7 +511,7 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
         else:
             semantic_dim = hidden_channels
         
-        # LQ局部特征提取器（用于与语义特征融合）
+        # MSE局部特征提取器（用于与语义特征融合）
         self.lq_encoder = nn.Sequential(
             nn.Conv2d(channels, hidden_channels, 3, padding=1),
             nn.GroupNorm(num_groups=8, num_channels=hidden_channels),
@@ -540,7 +540,7 @@ class ContentAwareSpatialUncertaintyMapping(nn.Module):
             )
             self.logger.info(f"Semantic projection: {semantic_dim} -> {hidden_channels}")
         
-        # 🔥 改进的Cross-Attention：LQ query语义特征（如果使用预训练模型）
+        # 🔥 改进的Cross-Attention：MSE query语义特征（如果使用预训练模型）
         # 否则使用原来的window-based attention
         if self.use_pretrained_semantic:
             # Token-based Cross-Attention（LQ spatial tokens query semantic tokens）
